@@ -1,0 +1,54 @@
+# Environment & Secrets
+*.env
+*.env.*
+*.pem
+*.key
+*.cer
+*.crt
+*.pfx
+*.p12
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Gradle build outputs and caches
+.gradle/
+build/
+**/build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE & Editor files
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Eclipse / STS
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache
+bin/
+**/bin/
+
+# Logs & temporary files
+*.log
+logs/
+**/logs/
+*.txt
+!HELP.md
+!README.md

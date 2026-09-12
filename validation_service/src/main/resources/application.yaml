@@ -1,0 +1,38 @@
+spring:
+  application:
+    name: validation_service
+
+  mongodb:
+    uri: ${MONGODB_URI:mongodb+srv://taskadmin:QwertyKeypad123@cluster0.02zhddb.mongodb.net/book_management}
+
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:ap-south-1}
+
+# AWS Configuration
+aws:
+  region: ${AWS_REGION:ap-south-1}
+  
+  s3:
+    bucket-name: ${AWS_S3_BUCKET:book-platform-files-206465504931-ap-south-1-an}
+    archive-bucket-name: ${AWS_S3_ARCHIVE_BUCKET:s3://book-platform-files-206465504931-ap-south-1-an/archive/}
+    object-key-prefix: injection
+
+  sns:
+    validation-result-topic-arn: ${AWS_SNS_TOPIC_ARN:arn:aws:sns:ap-south-1:206465504931:manuscript-validation-result}
+    region: ${AWS_REGION:ap-south-1}
+  
+  sqs:
+    validation-queue-url: ${AWS_SQS_QUEUE_URL:https://sqs.ap-south-1.amazonaws.com/206465504931/manuscript-validation-queue}
+    region: ${AWS_REGION:ap-south-1}
+  
+  ses:
+    from-email: ${AWS_SES_FROM_EMAIL:vishakhamore2828@gmail.com}
+    region: ${AWS_REGION:ap-south-1}
+
+logging:
+  level:
+    root: INFO
+    com.manuscriptvalidation: DEBUG
+    org.springframework.data.mongodb: DEBUG

@@ -1,0 +1,55 @@
+HELP.md
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+### VS Code ###
+.vscode/
+
+# Credentials & Keys
+*.pem
+*.key
+*.cer
+*.crt
+.env
+.env.*
+
+# Local Test & Output Artifacts
+*.txt
+*.log
+s3-permission-test.txt
+test-output.txtgit add .
+git commit -m "feat: configure automated CI/CD pipeline via GitHub Actions and AWS SSM"
+git push origin maingit add .
+git commit -m "feat: configure automated CI/CD pipeline via GitHub Actions and AWS SSM"
+git push origin main
