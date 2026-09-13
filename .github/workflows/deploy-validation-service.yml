@@ -1,6 +1,6 @@
 name: Build and Deploy Validation Service
 
-# Retrigger: verifying OIDC role-based AWS auth (role-to-assume)
+# Automated CI/CD: Java 21 build, S3 staging, and AWS SSM EC2 deployment
 on:
   push:
     branches:
