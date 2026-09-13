@@ -72,34 +72,39 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-            role-to-assume: arn:aws:iam::206465504931:role/GitHubActions-Manuscript-Microservice-Deploy
-            aws-region: ap-south-1
+          role-to-assume: arn:aws:iam::206465504931:role/GitHubActions-Manuscript-Microservice-Deploy
+          aws-region: ap-south-1
 
       - name: Upload JAR to S3 Deployment Bucket
+        env:
+          DEPLOY_BUCKET: ${{ secrets.DEPLOYMENT_S3_BUCKET || 'book-platform-files-206465504931-ap-south-1-an' }}
         run: |
           aws s3 cp build/libs/validation-service-0.0.1-SNAPSHOT.jar \
-            s3://${{ secrets.DEPLOYMENT_S3_BUCKET }}/deployments/validation-service/validation-service-0.0.1-SNAPSHOT.jar
+            s3://${DEPLOY_BUCKET}/deployments/validation-service/validation-service-0.0.1-SNAPSHOT.jar
 
       - name: Execute Remote Deployment on EC2 via AWS Systems Manager (SSM)
         id: ssm_deploy
+        env:
+          DEPLOY_BUCKET: ${{ secrets.DEPLOYMENT_S3_BUCKET || 'book-platform-files-206465504931-ap-south-1-an' }}
+          TARGET_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID || 'i-0968a76162e55d86b' }}
         run: |
-          echo "=== Dispatching SSM Command to EC2 Instance: ${{ secrets.EC2_INSTANCE_ID }} ==="
+          echo "=== Dispatching SSM Command to EC2 Instance: ${TARGET_INSTANCE_ID} ==="
           
           COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --instance-ids "${TARGET_INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "set -e",
-              "echo \"=== [1/4] Pulling updated JAR from S3 ===\"",
-              "aws s3 cp s3://${{ secrets.DEPLOYMENT_S3_BUCKET }}/deployments/validation-service/validation-service-0.0.1-SNAPSHOT.jar /opt/book-platform/validation-service/validation-service-0.0.1-SNAPSHOT.jar",
-              "sudo chown ubuntu:ubuntu /opt/book-platform/validation-service/validation-service-0.0.1-SNAPSHOT.jar",
-              "echo \"=== [2/4] Restarting systemd service ===\"",
-              "sudo systemctl restart validation-service.service",
-              "echo \"=== [3/4] Awaiting service initialization ===\"",
-              "sleep 8",
-              "echo \"=== [4/4] Verifying active service status ===\"",
-              "sudo systemctl is-active --quiet validation-service.service && echo \"SUCCESS: validation-service is active and running!\" || (echo \"ERROR: validation-service failed to start\" && sudo journalctl -u validation-service.service -n 50 --no-pager && exit 1)"
-            ]' \
+            --parameters "commands=[
+              \"set -e\",
+              \"echo \\\"=== [1/4] Pulling updated JAR from S3 ===\\\"\",
+              \"aws s3 cp s3://${DEPLOY_BUCKET}/deployments/validation-service/validation-service-0.0.1-SNAPSHOT.jar /opt/book-platform/validation-service/validation-service-0.0.1-SNAPSHOT.jar\",
+              \"sudo chown ubuntu:ubuntu /opt/book-platform/validation-service/validation-service-0.0.1-SNAPSHOT.jar\",
+              \"echo \\\"=== [2/4] Restarting systemd service ===\\\"\",
+              \"sudo systemctl restart validation-service.service\",
+              \"echo \\\"=== [3/4] Awaiting service initialization ===\\\"\",
+              \"sleep 8\",
+              \"echo \\\"=== [4/4] Verifying active service status ===\\\"\",
+              \"sudo systemctl is-active --quiet validation-service.service && echo \\\"SUCCESS: validation-service is active and running!\\\" || (echo \\\"ERROR: validation-service failed to start\\\" && sudo journalctl -u validation-service.service -n 50 --no-pager && exit 1)\"
+            ]" \
             --comment "Deploy Validation Service via GitHub Actions" \
             --query "Command.CommandId" \
             --output text)
@@ -112,7 +117,7 @@ jobs:
             sleep 5
             status=$(aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
-              --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+              --instance-id "${TARGET_INSTANCE_ID}" \
               --query "Status" \
               --output text 2>/dev/null || echo "Pending")
             echo "Deployment execution status: $status"
@@ -123,13 +128,13 @@ jobs:
             echo "--- Standard Output ---"
             aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
-              --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+              --instance-id "${TARGET_INSTANCE_ID}" \
               --query "StandardOutputContent" \
               --output text
             echo "--- Standard Error ---"
             aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
-              --instance-id "${{ secrets.EC2_INSTANCE_ID }}" \
+              --instance-id "${TARGET_INSTANCE_ID}" \
               --query "StandardErrorContent" \
               --output text
             exit 1
