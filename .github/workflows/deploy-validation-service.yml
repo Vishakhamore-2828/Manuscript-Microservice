@@ -1,13 +1,9 @@
 name: Build and Deploy Validation Service
 
-# Automated CI/CD: Java 21 build, S3 staging, and AWS SSM EC2 deployment
 on:
   push:
     branches:
       - main
-    paths:
-      - 'validation_service/**'
-      - '.github/workflows/deploy-validation-service.yml'
   workflow_dispatch:
 
 permissions:
@@ -90,21 +86,28 @@ jobs:
         run: |
           echo "=== Dispatching SSM Command to EC2 Instance: ${TARGET_INSTANCE_ID} ==="
           
+          # Create parameter JSON file
+          cat << 'EOF' > ssm-params.json
+          {
+            "commands": [
+              "set -e",
+              "echo '=== [1/4] Pulling updated JAR from S3 ==='",
+              "aws s3 cp s3://book-platform-files-206465504931-ap-south-1-an/deployments/validation-service/validation-service-0.0.1-SNAPSHOT.jar /opt/book-platform/validation-service/validation-service-0.0.1-SNAPSHOT.jar",
+              "sudo chown ubuntu:ubuntu /opt/book-platform/validation-service/validation-service-0.0.1-SNAPSHOT.jar",
+              "echo '=== [2/4] Restarting systemd service ==='",
+              "sudo systemctl restart validation-service.service",
+              "echo '=== [3/4] Awaiting service initialization ==='",
+              "sleep 8",
+              "echo '=== [4/4] Verifying active service status ==='",
+              "sudo systemctl is-active --quiet validation-service.service && echo 'SUCCESS: validation-service is active and running!' || (echo 'ERROR: validation-service failed to start' && sudo journalctl -u validation-service.service -n 50 --no-pager && exit 1)"
+            ]
+          }
+          EOF
+
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${TARGET_INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[
-              \"set -e\",
-              \"echo \\\"=== [1/4] Pulling updated JAR from S3 ===\\\"\",
-              \"aws s3 cp s3://${DEPLOY_BUCKET}/deployments/validation-service/validation-service-0.0.1-SNAPSHOT.jar /opt/book-platform/validation-service/validation-service-0.0.1-SNAPSHOT.jar\",
-              \"sudo chown ubuntu:ubuntu /opt/book-platform/validation-service/validation-service-0.0.1-SNAPSHOT.jar\",
-              \"echo \\\"=== [2/4] Restarting systemd service ===\\\"\",
-              \"sudo systemctl restart validation-service.service\",
-              \"echo \\\"=== [3/4] Awaiting service initialization ===\\\"\",
-              \"sleep 8\",
-              \"echo \\\"=== [4/4] Verifying active service status ===\\\"\",
-              \"sudo systemctl is-active --quiet validation-service.service && echo \\\"SUCCESS: validation-service is active and running!\\\" || (echo \\\"ERROR: validation-service failed to start\\\" && sudo journalctl -u validation-service.service -n 50 --no-pager && exit 1)\"
-            ]" \
+            --parameters file://ssm-params.json \
             --comment "Deploy Validation Service via GitHub Actions" \
             --query "Command.CommandId" \
             --output text)
