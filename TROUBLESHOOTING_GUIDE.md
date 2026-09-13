@@ -201,6 +201,7 @@ aws configure
 # Enter:
 # AWS Access Key ID: YOUR_KEY
 # AWS Secret Access Key: YOUR_SECRET
+# AWS Session Token: YOUR_SESSION_TOKEN   # required for temporary STS credentials
 # Default region name: ap-south-1
 # Default output format: json
 
@@ -886,4 +887,3 @@ java -Xmx1024m -Xms512m -jar upload-service-*.jar
 #    - Review application logs for specific error messages
 #    - Contact AWS support if AWS service issue
 ```
-
