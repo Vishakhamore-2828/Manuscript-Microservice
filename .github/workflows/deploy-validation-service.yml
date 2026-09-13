@@ -1,5 +1,6 @@
 name: Build and Deploy Validation Service
 
+# Retrigger: verifying OIDC role-based AWS auth (role-to-assume)
 on:
   push:
     branches:
