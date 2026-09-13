@@ -20,8 +20,8 @@ public class FileCorruptionValidator {
     // PDF magic number: %PDF
     private static final byte[] PDF_SIGNATURE = {0x25, 0x50, 0x44, 0x46};
     // DOCX magic number: PK (ZIP format)
-    private static final byte[] DOCX_SIGNATURE = {0x50, 0x4B, 0x03, 0x04};
-    // DOC magic number: D0CF11E0 (OLE2 format)
+    private static final byte[] DOCX_SIGNATURE = {0x50, 0x4B, 0x03, 0x04};    // EPUB magic number: PK (ZIP format)
+    private static final byte[] EPUB_SIGNATURE = {0x50, 0x4B, 0x03, 0x04};    // DOC magic number: D0CF11E0 (OLE2 format)
     private static final byte[] DOC_SIGNATURE = {(byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0};
     // TXT files: any ASCII/UTF-8 content
     private static final int MIN_FILE_SIZE = 10; // At least 10 bytes
@@ -83,6 +83,17 @@ public class FileCorruptionValidator {
                             new ValidationErrorDto(
                                     "CORRUPTED_FILE",
                                     "DOCX file is corrupted - invalid ZIP structure"
+                            )
+                    );
+                    result.setPassed(false);
+                    return result;
+                }
+            } else if (extension.equals("epub")) {
+                if (!validateEpub(fileContent)) {
+                    result.addError(
+                            new ValidationErrorDto(
+                                    "CORRUPTED_FILE",
+                                    "EPUB file is corrupted - invalid ZIP structure"
                             )
                     );
                     result.setPassed(false);
@@ -159,12 +170,20 @@ public class FileCorruptionValidator {
         }
 
         // Check for PDF end marker within last 1024 bytes
-        String endContent = new String(fileContent, Math.max(0, fileContent.length - 1024));
-        if (!endContent.contains("%%EOF")) {
+        int offset = Math.max(0, fileContent.length - 1024);
+        int length = fileContent.length - offset;
+        String endContent = new String(fileContent, offset, length, java.nio.charset.StandardCharsets.ISO_8859_1);
+        return endContent.contains("%%EOF");
+    }
+
+    /**
+     * Validate EPUB file format (ZIP-based)
+     */
+    private boolean validateEpub(byte[] fileContent) {
+        if (!startsWith(fileContent, EPUB_SIGNATURE)) {
             return false;
         }
-
-        return true;
+        return fileContent.length > 100;
     }
 
     /**

@@ -104,11 +104,6 @@ public class ValidationStatusService {
 
         return validationStatusRepository
                 .findByRequestId(requestId)
-                .orElseThrow(() ->
-                        new RuntimeException(
-                                "Validation status not found for requestId: "
-                                        + requestId
-                        )
-                );
+                .orElseGet(() -> createStatus(requestId));
     }
 }
