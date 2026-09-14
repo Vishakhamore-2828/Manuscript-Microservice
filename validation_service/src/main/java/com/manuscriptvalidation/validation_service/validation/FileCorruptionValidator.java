@@ -232,12 +232,8 @@ public class FileCorruptionValidator {
         if (data == null || signature == null || data.length < signature.length) {
             return false;
         }
-        for (int i = 0; i < signature.length; i++) {
-            if (data[i] != signature[i]) {
-                return false;
-            }
-        }
-        return true;
+        return java.util.stream.IntStream.range(0, signature.length)
+                .allMatch(i -> data[i] == signature[i]);
     }
 
     /**
