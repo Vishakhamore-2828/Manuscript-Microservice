@@ -122,7 +122,7 @@ public class ValidationProcessor implements Processor {
 
         // Step 5: Download file content from S3
         logger.info("📥 Downloading manuscript from S3 for requestId: {}", requestId);
-        String s3Path = "injection/" + requestId + "/" + fileName;
+        String s3Path = "ingestion/" + requestId + "/" + fileName;
         byte[] manuscriptContent = s3Service.downloadManuscriptByPath(s3Path);
 
         // Step 6: Validate file existence

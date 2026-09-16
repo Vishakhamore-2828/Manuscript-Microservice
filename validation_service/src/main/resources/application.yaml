@@ -17,7 +17,7 @@ aws:
   s3:
     bucket-name: ${AWS_S3_BUCKET:book-platform-files-206465504931-ap-south-1-an}
     archive-bucket-name: ${AWS_S3_ARCHIVE_BUCKET:s3://book-platform-files-206465504931-ap-south-1-an/archive/}
-    object-key-prefix: injection
+    object-key-prefix: ingection
 
   sns:
     validation-result-topic-arn: ${AWS_SNS_TOPIC_ARN:arn:aws:sns:ap-south-1:206465504931:manuscript-validation-result}
