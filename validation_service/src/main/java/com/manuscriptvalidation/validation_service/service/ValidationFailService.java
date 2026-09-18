@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sns.model.PublishRequest;
 import software.amazon.awssdk.services.sns.model.PublishResponse;
+import java.util.List;
 
 /**
  * ValidationFailService - Handles rejection lifecycle when any validation rule fails:
@@ -44,8 +45,13 @@ public class ValidationFailService {
         logger.warn("🚫 Processing VALIDATION_FAIL lifecycle for request: {} (Errors: {})",
                 requestId, validationResult != null ? validationResult.getErrors().size() : 1);
 
-        // 1. Record validation failed activity in MongoDB
-        activityService.addActivity(requestId, ActivityType.VALIDATION_FAILED);
+        // 1. Record validation failed activity with error details in MongoDB
+        activityService.addValidationFailedActivity(
+            requestId,
+            validationResult != null
+                ? validationResult.getErrors()
+                : List.of()
+        );
 
         // 2. Publish failure event to SNS topic
         int errorCount = (validationResult != null) ? validationResult.getErrors().size() : 1;

@@ -71,7 +71,7 @@ public class FileCorruptionValidator {
                     result.addError(
                             new ValidationErrorDto(
                                     "CORRUPTED_FILE",
-                                    "PDF file is corrupted - invalid magic number or structure"
+                                    "PDF file is corrupted."
                             )
                     );
                     result.setPassed(false);
@@ -82,7 +82,7 @@ public class FileCorruptionValidator {
                     result.addError(
                             new ValidationErrorDto(
                                     "CORRUPTED_FILE",
-                                    "DOCX file is corrupted - invalid ZIP structure"
+                                    "DOCX file is corrupted."
                             )
                     );
                     result.setPassed(false);
@@ -93,7 +93,7 @@ public class FileCorruptionValidator {
                     result.addError(
                             new ValidationErrorDto(
                                     "CORRUPTED_FILE",
-                                    "EPUB file is corrupted - invalid ZIP structure"
+                                    "EPUB file is corrupted."
                             )
                     );
                     result.setPassed(false);
@@ -104,7 +104,7 @@ public class FileCorruptionValidator {
                     result.addError(
                             new ValidationErrorDto(
                                     "CORRUPTED_FILE",
-                                    "DOC file is corrupted - invalid OLE2 structure"
+                                    "DOC file is corrupted."
                             )
                     );
                     result.setPassed(false);
