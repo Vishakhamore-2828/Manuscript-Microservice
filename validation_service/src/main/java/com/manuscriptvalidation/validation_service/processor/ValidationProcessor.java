@@ -406,55 +406,59 @@ public class ValidationProcessor implements Processor {
         return emailBody.toString();
     }
 
-    private void publishValidationResultToSNS(String requestId, 
-                                              FileUploadedEvent event,
-                                              ValidationResultDto result) throws Exception {
-        
-        ValidationResultMessage resultMessage = new ValidationResultMessage(
-            requestId,
-            event.getBookId(),
-            event.getAuthorId(),
-            result.isPassed(),
-            result.getErrors().size(),
-            result.isPassed() ? "VALIDATION_PASSED" : "VALIDATION_FAILED"
-        );
-        
-        String messageJson = objectMapper.writeValueAsString(resultMessage);
-        
-        PublishRequest publishRequest = PublishRequest.builder()
-            .topicArn(validationResultTopicArn)
-            .message(messageJson)
-            .subject("Manuscript Validation Result - " + requestId)
-            .build();
-        
-        PublishResponse response = snsClient.publish(publishRequest);
-        logger.info("✅ SNS Message ID: {}", response.messageId());
-    }
+    private void publishValidationResultToSNS(
+        String requestId,
+        FileUploadedEvent event,
+        ValidationResultDto result) throws Exception {
 
-    private void publishValidationErrorToSNS(String requestId,
-                                             FileUploadedEvent event,
-                                             Exception error) throws Exception {
-        
-        ValidationResultMessage errorMessage = new ValidationResultMessage(
-            requestId,
-            event.getBookId(),
-            event.getAuthorId(),
-            false,
-            1,
-            "VALIDATION_ERROR: " + error.getMessage()
-        );
-        
-        String messageJson = objectMapper.writeValueAsString(errorMessage);
-        
-        PublishRequest publishRequest = PublishRequest.builder()
-            .topicArn(validationResultTopicArn)
-            .message(messageJson)
-            .subject("Manuscript Validation Error - " + requestId)
-            .build();
-        
-        snsClient.publish(publishRequest);
-        logger.error("❌ Error published to SNS");
-    }
+    ValidationResultMessage resultMessage = new ValidationResultMessage(
+        requestId,
+        event.getBookId(),
+        event.getAuthorId(),
+        event.getS3Reference(),
+        result.isPassed(),
+        result.getErrors().size(),
+        result.isPassed() ? "VALIDATION_PASSED" : "VALIDATION_FAILED"
+    );
+
+    String messageJson = objectMapper.writeValueAsString(resultMessage);
+
+    PublishRequest publishRequest = PublishRequest.builder()
+        .topicArn(validationResultTopicArn)
+        .message(messageJson)
+        .subject("Manuscript Validation Result - " + requestId)
+        .build();
+
+    PublishResponse response = snsClient.publish(publishRequest);
+    logger.info("✅ SNS Message ID: {}", response.messageId());
+}
+
+    private void publishValidationErrorToSNS(
+        String requestId,
+        FileUploadedEvent event,
+        Exception error) throws Exception {
+
+    ValidationResultMessage errorMessage = new ValidationResultMessage(
+        requestId,
+        event.getBookId(),
+        event.getAuthorId(),
+        event.getS3Reference(),
+        false,
+        1,
+        "VALIDATION_ERROR: " + error.getMessage()
+    );
+
+    String messageJson = objectMapper.writeValueAsString(errorMessage);
+
+    PublishRequest publishRequest = PublishRequest.builder()
+        .topicArn(validationResultTopicArn)
+        .message(messageJson)
+        .subject("Manuscript Validation Error - " + requestId)
+        .build();
+
+    snsClient.publish(publishRequest);
+    logger.error("❌ Error published to SNS");
+}
 
     private String extractFileNameFromS3Reference(String s3Reference) {
         if (s3Reference == null || s3Reference.isEmpty()) {
@@ -464,21 +468,31 @@ public class ValidationProcessor implements Processor {
     }
 
     public static class ValidationResultMessage {
-        public String requestId;
-        public String bookId;
-        public String authorId;
-        public boolean validationPassed;
-        public int errorCount;
-        public String status;
 
-        public ValidationResultMessage(String requestId, String bookId, String authorId,
-                                      boolean validationPassed, int errorCount, String status) {
-            this.requestId = requestId;
-            this.bookId = bookId;
-            this.authorId = authorId;
-            this.validationPassed = validationPassed;
-            this.errorCount = errorCount;
-            this.status = status;
-        }
+    public String requestId;
+    public String bookId;
+    public String authorId;
+    public String s3Reference;
+    public boolean validationPassed;
+    public int errorCount;
+    public String status;
+
+    public ValidationResultMessage(
+            String requestId,
+            String bookId,
+            String authorId,
+            String s3Reference,
+            boolean validationPassed,
+            int errorCount,
+            String status) {
+
+        this.requestId = requestId;
+        this.bookId = bookId;
+        this.authorId = authorId;
+        this.s3Reference = s3Reference;
+        this.validationPassed = validationPassed;
+        this.errorCount = errorCount;
+        this.status = status;
     }
+}
 }
