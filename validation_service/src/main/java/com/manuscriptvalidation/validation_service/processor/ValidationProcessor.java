@@ -1,24 +1,34 @@
 package com.manuscriptvalidation.validation_service.processor;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.manuscriptvalidation.validation_service.dto.FileUploadedEvent;
 import com.manuscriptvalidation.validation_service.dto.ValidationResultDto;
+import com.manuscriptvalidation.validation_service.dto.ValidationStatus;
+import com.manuscriptvalidation.validation_service.enums.ActivityType;
+import com.manuscriptvalidation.validation_service.service.ActivityService;
 import com.manuscriptvalidation.validation_service.service.S3Service;
 import com.manuscriptvalidation.validation_service.service.ValidationService;
-import com.manuscriptvalidation.validation_service.service.SesEmailService;
-import com.manuscriptvalidation.validation_service.service.ActivityService;
-import com.manuscriptvalidation.validation_service.enums.ActivityType;
+import com.manuscriptvalidation.validation_service.service.ValidationStatusService;
 import org.apache.camel.Exchange;
 import org.apache.camel.Processor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import software.amazon.awssdk.services.sns.SnsClient;
-import software.amazon.awssdk.services.sns.model.PublishRequest;
-import software.amazon.awssdk.services.sns.model.PublishResponse;
+import com.manuscriptvalidation.validation_service.dto.ValidationErrorDto;
+import java.util.ArrayList;
+import java.util.List;
 
+/**
+ * ValidationProcessor - Executes the sequential manuscript validation pipeline:
+ * 1. Required Metadata Validation
+ * 2. ISBN Validation
+ * 3. File Extension Validation
+ * 4. File Name Validation
+ * 5. File Existence Validation (S3 fetch)
+ * 6. File Size Validation
+ * 7. File Corruption / Integrity Validation
+ */
 @Component
 public class ValidationProcessor implements Processor {
 
@@ -27,472 +37,476 @@ public class ValidationProcessor implements Processor {
     private final ObjectMapper objectMapper;
     private final S3Service s3Service;
     private final ValidationService validationService;
-    private final SnsClient snsClient;
     private final ActivityService activityService;
-    private final SesEmailService sesEmailService;
-    
-    @Value("${aws.sns.validation-result-topic-arn}")
-    private String validationResultTopicArn;
-    
-    @Value("${aws.s3.archive-bucket-name}")
-    private String archiveBucketName;
+    private final ValidationStatusService validationStatusService;
 
-    public ValidationProcessor(ObjectMapper objectMapper, 
+    public ValidationProcessor(ObjectMapper objectMapper,
                                S3Service s3Service,
                                ValidationService validationService,
-                               SnsClient snsClient,
                                ActivityService activityService,
-                               SesEmailService sesEmailService) {
+                               ValidationStatusService validationStatusService) {
         this.objectMapper = objectMapper;
         this.s3Service = s3Service;
         this.validationService = validationService;
-        this.snsClient = snsClient;
         this.activityService = activityService;
-        this.sesEmailService = sesEmailService;
+        this.validationStatusService = validationStatusService;
     }
 
     @Override
     public void process(Exchange exchange) throws Exception {
-        
-        String message = exchange.getIn().getBody(String.class);
-        JsonNode snsEnvelope = objectMapper.readTree(message);
-        String innerMessage = snsEnvelope.has("Message") 
-            ? snsEnvelope.get("Message").asText() 
+
+    String message = exchange.getIn().getBody(String.class);
+
+    JsonNode snsEnvelope = objectMapper.readTree(message);
+
+    String innerMessage = (snsEnvelope != null && snsEnvelope.has("Message"))
+            ? snsEnvelope.get("Message").asText()
             : message;
 
-        FileUploadedEvent event = objectMapper.readValue(innerMessage, FileUploadedEvent.class);
-        String requestId = event.getRequestId();
+    FileUploadedEvent event =
+            objectMapper.readValue(innerMessage, FileUploadedEvent.class);
 
-        logger.info("📋 Adding VALIDATION_STARTED activity");
-        activityService.addActivity(requestId, ActivityType.VALIDATION_STARTED);
+    String requestId = event.getRequestId();
 
-        ValidationResultDto validationResult = null;
+    logger.info("📋 Initializing validation tracking for requestId: {}", requestId);
 
-        try {
-            // Step 1: Validate required metadata
-            logger.info("🔍 Starting metadata validation: {}", requestId);
-            validationResult = validationService.validateMetadata(event);
-
-            if (!validationResult.isPassed()) {
-                logger.error("❌ Metadata validation failed for requestId: {}", requestId);
-                activityService.addActivity(requestId, ActivityType.VALIDATION_FAILED);
-
-                boolean emailSent = sendValidationNotification(requestId, event, false, validationResult, "Required Metadata Validation");
-                
-                if (emailSent) {
-                    logger.info("✅ Adding EMAIL_SENT activity");
-                    activityService.addActivity(requestId, ActivityType.EMAIL_SENT);
-                } else {
-                    logger.info("❌ Adding EMAIL_NOT_SENT activity");
-                    activityService.addActivity(requestId, ActivityType.EMAIL_NOT_SENT);
-                }
-
-                publishValidationResultToSNS(requestId, event, validationResult);
-                exchange.getIn().setHeader("VALIDATION_PASSED", false);
-                exchange.getIn().setHeader("REQUEST_ID", requestId);
-                exchange.getIn().setBody(validationResult);
-                return;
-            }
-
-            logger.info("✅ Metadata validation passed");
-
-            // Step 2: Validate file extension from S3
-            logger.info("🔍 Validating file extension from S3: {}", event.getS3Reference());
-            ValidationResultDto fileValidation = validationService.validateFileExtension(event.getS3Reference());
-
-            if (!fileValidation.isPassed()) {
-                logger.error("❌ File extension validation failed for requestId: {}", requestId);
-                validationResult = fileValidation;
-                activityService.addActivity(requestId, ActivityType.VALIDATION_FAILED);
-
-                boolean emailSent = sendValidationNotification(requestId, event, false, fileValidation, "File Extension Validation");
-                
-                if (emailSent) {
-                    activityService.addActivity(requestId, ActivityType.EMAIL_SENT);
-                } else {
-                    activityService.addActivity(requestId, ActivityType.EMAIL_NOT_SENT);
-                }
-
-                publishValidationResultToSNS(requestId, event, validationResult);
-                exchange.getIn().setHeader("VALIDATION_PASSED", false);
-                exchange.getIn().setHeader("REQUEST_ID", requestId);
-                exchange.getIn().setBody(validationResult);
-                return;
-            }
-
-            logger.info("✅ File extension validation passed");
-
-            // Step 3: Validate file name
-            String fileName = extractFileNameFromS3Reference(event.getS3Reference());
-            logger.info("🔍 Validating file name: {}", fileName);
-            ValidationResultDto fileNameValidation = validationService.validateFileName(fileName);
-
-            if (!fileNameValidation.isPassed()) {
-                logger.error("❌ File name validation failed for requestId: {}", requestId);
-                validationResult = fileNameValidation;
-                activityService.addActivity(requestId, ActivityType.VALIDATION_FAILED);
-
-                boolean emailSent = sendValidationNotification(requestId, event, false, fileNameValidation, "File Name Validation");
-                
-                if (emailSent) {
-                    activityService.addActivity(requestId, ActivityType.EMAIL_SENT);
-                } else {
-                    activityService.addActivity(requestId, ActivityType.EMAIL_NOT_SENT);
-                }
-
-                publishValidationResultToSNS(requestId, event, validationResult);
-                exchange.getIn().setHeader("VALIDATION_PASSED", false);
-                exchange.getIn().setHeader("REQUEST_ID", requestId);
-                exchange.getIn().setBody(validationResult);
-                return;
-            }
-
-            logger.info("✅ File name validation passed");
-
-            // Step 4: Download file (only after all validations pass)
-            logger.info("📥 Downloading manuscript from S3 for requestId: {}", requestId);
-            String s3Path = "injection/" + requestId + "/" + fileName;
-            byte[] manuscriptContent = s3Service.downloadManuscriptByPath(s3Path);
-
-            // Step 5: Validate file existence
-            logger.info("🔍 Validating file existence");
-            ValidationResultDto fileExistenceValidation = validationService.validateFileExistence(manuscriptContent);
-
-            if (!fileExistenceValidation.isPassed()) {
-                logger.error("❌ File existence validation failed for requestId: {}", requestId);
-                validationResult = fileExistenceValidation;
-                activityService.addActivity(requestId, ActivityType.VALIDATION_FAILED);
-
-                boolean emailSent = sendValidationNotification(requestId, event, false, fileExistenceValidation, "File Existence Validation");
-                
-                if (emailSent) {
-                    activityService.addActivity(requestId, ActivityType.EMAIL_SENT);
-                } else {
-                    activityService.addActivity(requestId, ActivityType.EMAIL_NOT_SENT);
-                }
-
-                publishValidationResultToSNS(requestId, event, validationResult);
-                exchange.getIn().setHeader("VALIDATION_PASSED", false);
-                exchange.getIn().setHeader("REQUEST_ID", requestId);
-                exchange.getIn().setBody(validationResult);
-                return;
-            }
-
-            logger.info("✅ File existence validation passed");
-
-            // Step 6: Validate file size
-            logger.info("🔍 Validating file size");
-            ValidationResultDto fileSizeValidation = validationService.validateFileSize(manuscriptContent);
-
-            if (!fileSizeValidation.isPassed()) {
-                logger.error("❌ File size validation failed for requestId: {}", requestId);
-                validationResult = fileSizeValidation;
-                activityService.addActivity(requestId, ActivityType.VALIDATION_FAILED);
-
-                boolean emailSent = sendValidationNotification(requestId, event, false, fileSizeValidation, "File Size Validation");
-                
-                if (emailSent) {
-                    activityService.addActivity(requestId, ActivityType.EMAIL_SENT);
-                } else {
-                    activityService.addActivity(requestId, ActivityType.EMAIL_NOT_SENT);
-                }
-
-                publishValidationResultToSNS(requestId, event, validationResult);
-                exchange.getIn().setHeader("VALIDATION_PASSED", false);
-                exchange.getIn().setHeader("REQUEST_ID", requestId);
-                exchange.getIn().setBody(validationResult);
-                return;
-            }
-
-            logger.info("✅ File size validation passed");
-
-            // Step 7: Validate file corruption
-            logger.info("🔍 Validating file integrity");
-            ValidationResultDto fileCorruptionValidation = validationService.validateFileCorruption(manuscriptContent, fileName);
-
-            if (!fileCorruptionValidation.isPassed()) {
-                logger.error("❌ File corruption validation failed for requestId: {}", requestId);
-                validationResult = fileCorruptionValidation;
-                activityService.addActivity(requestId, ActivityType.VALIDATION_FAILED);
-
-                boolean emailSent = sendValidationNotification(requestId, event, false, fileCorruptionValidation, "File Integrity (Corruption) Validation");
-                
-                if (emailSent) {
-                    activityService.addActivity(requestId, ActivityType.EMAIL_SENT);
-                } else {
-                    activityService.addActivity(requestId, ActivityType.EMAIL_NOT_SENT);
-                }
-
-                publishValidationResultToSNS(requestId, event, validationResult);
-                exchange.getIn().setHeader("VALIDATION_PASSED", false);
-                exchange.getIn().setHeader("REQUEST_ID", requestId);
-                exchange.getIn().setBody(validationResult);
-                return;
-            }
-
-            logger.info("✅ File integrity validation passed");
-
-            logger.info("✅ All validations passed for requestId: {}", requestId);
-            logger.info("✅ Adding VALIDATION_PASSED activity");
-            activityService.addActivity(requestId, ActivityType.VALIDATION_PASSED);
-
-            // Step 8: Archive file
-            try {
-                String archiveS3Url = archiveValidatedManuscript(requestId, fileName, manuscriptContent);
-
-                logger.info("✅ Adding FILE_ARCHIVED_PASSED activity");
-                activityService.addActivity(requestId, ActivityType.FILE_ARCHIVED_PASSED);
-
-                // Step 9: Send success email
-                boolean emailSent = sendValidationNotification(requestId, event, true, null, null);
-                
-                if (emailSent) {
-                    logger.info("✅ Adding EMAIL_SENT activity");
-                    activityService.addActivity(requestId, ActivityType.EMAIL_SENT);
-                } else {
-                    logger.info("❌ Adding EMAIL_NOT_SENT activity");
-                    activityService.addActivity(requestId, ActivityType.EMAIL_NOT_SENT);
-                }
-
-            } catch (Exception archiveError) {
-                logger.error("❌ Archive failed: {}", archiveError.getMessage());
-                
-                logger.info("❌ Adding FILE_ARCHIVED_FAILED activity");
-                activityService.addActivity(requestId, ActivityType.FILE_ARCHIVED_FAILED);
-                
-                logger.info("❌ Adding EMAIL_NOT_SENT activity");
-                activityService.addActivity(requestId, ActivityType.EMAIL_NOT_SENT);
-                
-                throw archiveError;
-            }
-
-            // Publish success result to SNS
-            publishValidationResultToSNS(requestId, event, validationResult);
-
-            exchange.getIn().setHeader("VALIDATION_PASSED", true);
-            exchange.getIn().setHeader("REQUEST_ID", requestId);
-            exchange.getIn().setBody(validationResult);
-
-        } catch (Exception e) {
-            logger.error("❌ Error during validation: {}", e.getMessage(), e);
-            
-            logger.info("❌ Adding VALIDATION_FAILED activity (error)");
-            activityService.addActivity(requestId, ActivityType.VALIDATION_FAILED);
-            
-            try {
-                publishValidationErrorToSNS(requestId, event, e);
-            } catch (Exception snsError) {
-                logger.error("Failed to publish error to SNS: {}", snsError.getMessage());
-            }
-            
-            throw e;
-        }
-    }
-
-    /**
-     * Send validation notification email
-     * @return true if email sent successfully, false if failed
-     */
-    private boolean sendValidationNotification(String requestId, 
-                                              FileUploadedEvent event,
-                                              boolean validationPassed,
-                                              ValidationResultDto validationResult,
-                                              String failedValidationName) {
-        try {
-            String authorEmail = event.getAuthorEmail();
-            
-            if (authorEmail == null || authorEmail.isBlank()) {
-                logger.warn("⚠️ Author email is missing for requestId: {}", requestId);
-                return false;
-            }
-            
-            logger.info("📧 Sending email notification for requestId: {} to {}", requestId, authorEmail);
-            
-            String subject = validationPassed 
-                ? "Manuscript Validation Passed" 
-                : "Manuscript Validation Failed";
-            
-            String emailBody = buildEmailBody(event, validationPassed, validationResult, failedValidationName);
-            
-            boolean emailSent = sesEmailService.sendEmail(authorEmail, subject, emailBody);
-            
-            if (emailSent) {
-                logger.info("Email successfully sent for requestId: {} to {}", requestId, authorEmail);
-            } else {
-                logger.warn("Email failed to send for requestId: {} to {}", requestId, authorEmail);
-            }
-            
-            return emailSent;
-            
-        } catch (Exception e) {
-            logger.error("❌ Unexpected error in email notification: {}", e.getMessage());
-            return false;
-        }
-    }
-
-    /**
-     * Archive validated manuscript to archive S3 bucket
-     * FIXED: Removed "archive/" prefix - let S3Service handle it
-     */
-    private String archiveValidatedManuscript(String requestId, String fileName, byte[] content) {
-        logger.info("📦 Archiving manuscript - RequestID: {}, FileName: {}", requestId, fileName);
-        
-        String archivePath = requestId + "/" + fileName;
-        return s3Service.uploadToArchiveBucket(archiveBucketName, archivePath, content);
-    }
-
-    private String buildEmailBody(FileUploadedEvent event, boolean passed, ValidationResultDto validationResult, String failedValidationName) {
-        StringBuilder emailBody = new StringBuilder();
-        
-        emailBody.append("Dear ").append(event.getAuthorId()).append(",\n\n");
-        
-        if (passed) {
-            // Success email - show all validations passed
-            emailBody.append("Excellent! Your manuscript has been validated successfully.\n\n");
-            emailBody.append("✅ Validation Status: ALL PASSED\n");
-            emailBody.append("\n✓ Validations Completed:\n");
-            emailBody.append("  1. Required Metadata Validation\n");
-            emailBody.append("  2. File Extension Validation\n");
-            emailBody.append("  3. File Name Validation\n");
-            emailBody.append("  4. File Existence Validation\n");
-            emailBody.append("  5. File Size Validation\n");
-            emailBody.append("  6. File Integrity (Corruption) Validation\n");
-            emailBody.append("\nBook ID: ").append(event.getBookId()).append("\n");
-        } else {
-            // Failure email - show what passed and what failed
-            emailBody.append("Your manuscript validation could not be completed.\n\n");
-            emailBody.append("❌ Validation Status: FAILED\n\n");
-            
-            // Build validation status list - show all validations with pass/fail status
-            emailBody.append("Validation Results:\n");
-            String[] validations = {
-                "Required Metadata Validation",
-                "File Extension Validation",
-                "File Name Validation",
-                "File Existence Validation",
-                "File Size Validation",
-                "File Integrity (Corruption) Validation"
-            };
-            
-            for (int i = 0; i < validations.length; i++) {
-                if (failedValidationName != null && validations[i].equals(failedValidationName)) {
-                    // This validation failed
-                    emailBody.append("  ❌ ").append(i + 1).append(". ").append(validations[i]).append("\n");
-                } else {
-                    // This validation passed
-                    emailBody.append("  ✅ ").append(i + 1).append(". ").append(validations[i]).append("\n");
-                }
-            }
-            
-            emailBody.append("\n");
-            
-            // Show error details
-            if (validationResult != null && !validationResult.getErrors().isEmpty()) {
-                emailBody.append("Error Details:\n");
-                for (var error : validationResult.getErrors()) {
-                    emailBody.append("  • ").append(error.getMessage()).append("\n");
-                }
-                emailBody.append("\n");
-            }
-            
-            emailBody.append("Book ID: ").append(event.getBookId()).append("\n");
-            emailBody.append("Request ID: ").append(event.getRequestId()).append("\n");
-        }
-        
-        emailBody.append("\nBest regards,\n");
-        emailBody.append("Manuscript Validation Service\n");
-        emailBody.append("Book Platform");
-        
-        return emailBody.toString();
-    }
-
-    private void publishValidationResultToSNS(
-        String requestId,
-        FileUploadedEvent event,
-        ValidationResultDto result) throws Exception {
-
-    ValidationResultMessage resultMessage = new ValidationResultMessage(
-        requestId,
-        event.getBookId(),
-        event.getAuthorId(),
-        event.getS3Reference(),
-        result.isPassed(),
-        result.getErrors().size(),
-        result.isPassed() ? "VALIDATION_PASSED" : "VALIDATION_FAILED"
+    activityService.addActivity(
+            requestId,
+            ActivityType.VALIDATION_STARTED
     );
 
-    String messageJson = objectMapper.writeValueAsString(resultMessage);
+    validationStatusService.createStatus(requestId);
 
-    PublishRequest publishRequest = PublishRequest.builder()
-        .topicArn(validationResultTopicArn)
-        .message(messageJson)
-        .subject("Manuscript Validation Result - " + requestId)
-        .build();
+    exchange.setProperty("EVENT_OBJECT", event);
+    exchange.getIn().setHeader("REQUEST_ID", requestId);
 
-    PublishResponse response = snsClient.publish(publishRequest);
-    logger.info("✅ SNS Message ID: {}", response.messageId());
-}
+    // Collect ALL validation errors
+    List<ValidationErrorDto> allErrors = new ArrayList<>();
 
-    private void publishValidationErrorToSNS(
-        String requestId,
-        FileUploadedEvent event,
-        Exception error) throws Exception {
 
-    ValidationResultMessage errorMessage = new ValidationResultMessage(
-        requestId,
-        event.getBookId(),
-        event.getAuthorId(),
-        event.getS3Reference(),
-        false,
-        1,
-        "VALIDATION_ERROR: " + error.getMessage()
+    // ================================================================
+    // 1. REQUIRED METADATA VALIDATION
+    // ================================================================
+
+    logger.info("🔍 [1/7] Validating required metadata: {}", requestId);
+
+    validationStatusService.updateRequiredMetadataStatus(
+            requestId,
+            ValidationStatus.PROCESSING
     );
 
-    String messageJson = objectMapper.writeValueAsString(errorMessage);
+    ValidationResultDto metadataResult =
+            validationService.validateMetadata(event);
 
-    PublishRequest publishRequest = PublishRequest.builder()
-        .topicArn(validationResultTopicArn)
-        .message(messageJson)
-        .subject("Manuscript Validation Error - " + requestId)
-        .build();
+    if (!metadataResult.isPassed()) {
 
-    snsClient.publish(publishRequest);
-    logger.error("❌ Error published to SNS");
+        allErrors.addAll(metadataResult.getErrors());
+
+        validationStatusService.updateRequiredMetadataStatus(
+                requestId,
+                ValidationStatus.FAILED
+        );
+
+        logger.warn("❌ [1/7] Metadata validation failed");
+
+    } else {
+
+        validationStatusService.updateRequiredMetadataStatus(
+                requestId,
+                ValidationStatus.SUCCESSFUL
+        );
+
+        logger.info("✅ [1/7] Metadata validation passed");
+    }
+
+
+    // ================================================================
+    // 2. ISBN VALIDATION
+    // ================================================================
+
+    logger.info("🔍 [2/7] Validating ISBN for requestId: {}", requestId);
+
+    validationStatusService.updateIsbnStatus(
+            requestId,
+            ValidationStatus.PROCESSING
+    );
+
+    ValidationResultDto isbnResult =
+            validationService.validateISBN(event.getIsbn());
+
+    if (!isbnResult.isPassed()) {
+
+        allErrors.addAll(isbnResult.getErrors());
+
+        validationStatusService.updateIsbnStatus(
+                requestId,
+                ValidationStatus.FAILED
+        );
+
+        logger.warn("❌ [2/7] ISBN validation failed");
+
+    } else {
+
+        validationStatusService.updateIsbnStatus(
+                requestId,
+                ValidationStatus.SUCCESSFUL
+        );
+
+        logger.info("✅ [2/7] ISBN validation passed");
+    }
+
+
+    // ================================================================
+    // 3. FILE EXISTENCE IN S3
+    // ================================================================
+
+    logger.info(
+            "🔍 [3/7] Checking file existence in S3: {}",
+            event.getS3Reference()
+    );
+
+    validationStatusService.updateFileExistenceStatus(
+            requestId,
+            ValidationStatus.PROCESSING
+    );
+
+    logger.info("📌 Raw s3Reference from event: '{}'", event.getS3Reference());
+
+    String fileName = extractFileName(event.getS3Reference());
+    
+    logger.info("📄 Extracted fileName from s3Reference: '{}'", fileName);
+
+    String s3Path = "ingestion/" + requestId + "/" + fileName;
+
+    logger.info("📂 Download path from S3: {}", s3Path);
+
+    byte[] manuscriptContent = null;
+
+    try {
+
+        logger.info(
+                "📥 File exists check: downloading manuscript from S3: {}",
+                s3Path
+        );
+
+        manuscriptContent =
+                s3Service.downloadManuscriptByPath(s3Path);
+
+        ValidationResultDto existenceResult =
+                validationService.validateFileExistence(manuscriptContent);
+
+        if (!existenceResult.isPassed()) {
+
+            allErrors.addAll(existenceResult.getErrors());
+
+            validationStatusService.updateFileExistenceStatus(
+                    requestId,
+                    ValidationStatus.FAILED
+            );
+
+            logger.warn("❌ [3/7] File existence validation failed");
+
+            // No file content available for later validations
+            setFinalValidationResult(
+                    exchange,
+                    allErrors,
+                    fileName,
+                    null
+            );
+
+            return;
+        }
+
+        validationStatusService.updateFileExistenceStatus(
+                requestId,
+                ValidationStatus.SUCCESSFUL
+        );
+
+        logger.info("✅ [3/7] File exists in S3 and was downloaded successfully");
+
+    } catch (Exception e) {
+
+        logger.error(
+                "❌ [3/7] File does not exist in S3: {}",
+                s3Path,
+                e
+        );
+
+        ValidationResultDto existenceResult =
+                new ValidationResultDto();
+
+        existenceResult.setPassed(false);
+
+        existenceResult.addError(
+                new ValidationErrorDto(
+                        "FILE_NOT_FOUND",
+                        "File does not exist in S3"
+                )
+        );
+
+        allErrors.addAll(existenceResult.getErrors());
+
+        validationStatusService.updateFileExistenceStatus(
+                requestId,
+                ValidationStatus.FAILED
+        );
+
+        setFinalValidationResult(
+                exchange,
+                allErrors,
+                fileName,
+                null
+        );
+
+        return;
+    }
+
+
+    // ================================================================
+    // 4. FILE EXTENSION
+    // ================================================================
+
+    logger.info(
+            "🔍 [4/7] Validating file extension: {}",
+            fileName
+    );
+
+    validationStatusService.updateFileExtensionStatus(
+            requestId,
+            ValidationStatus.PROCESSING
+    );
+
+    ValidationResultDto extensionResult =
+            validationService.validateFileExtension(
+                    event.getS3Reference()
+            );
+
+    if (!extensionResult.isPassed()) {
+
+        allErrors.addAll(extensionResult.getErrors());
+
+        validationStatusService.updateFileExtensionStatus(
+                requestId,
+                ValidationStatus.FAILED
+        );
+
+        logger.warn("❌ [4/7] File extension validation failed");
+
+    } else {
+
+        validationStatusService.updateFileExtensionStatus(
+                requestId,
+                ValidationStatus.SUCCESSFUL
+        );
+
+        logger.info("✅ [4/7] File extension validation passed");
+    }
+
+
+    // ================================================================
+    // 5. FILE NAME
+    // ================================================================
+
+    logger.info(
+            "🔍 [5/7] Validating file name: {}",
+            fileName
+    );
+
+    validationStatusService.updateFileNameStatus(
+            requestId,
+            ValidationStatus.PROCESSING
+    );
+
+    ValidationResultDto fileNameResult =
+            validationService.validateFileName(fileName);
+
+    if (!fileNameResult.isPassed()) {
+
+        allErrors.addAll(fileNameResult.getErrors());
+
+        validationStatusService.updateFileNameStatus(
+                requestId,
+                ValidationStatus.FAILED
+        );
+
+        logger.warn("❌ [5/7] File name validation failed");
+
+    } else {
+
+        validationStatusService.updateFileNameStatus(
+                requestId,
+                ValidationStatus.SUCCESSFUL
+        );
+
+        logger.info("✅ [5/7] File name validation passed");
+    }
+
+
+    // ================================================================
+    // 6. FILE SIZE
+    // ================================================================
+
+    logger.info("🔍 [6/7] Validating file size");
+
+    validationStatusService.updateFileSizeStatus(
+            requestId,
+            ValidationStatus.PROCESSING
+    );
+
+    ValidationResultDto sizeResult =
+            validationService.validateFileSize(manuscriptContent);
+
+    if (!sizeResult.isPassed()) {
+
+        allErrors.addAll(sizeResult.getErrors());
+
+        validationStatusService.updateFileSizeStatus(
+                requestId,
+                ValidationStatus.FAILED
+        );
+
+        logger.warn("❌ [6/7] File size validation failed");
+
+    } else {
+
+        validationStatusService.updateFileSizeStatus(
+                requestId,
+                ValidationStatus.SUCCESSFUL
+        );
+
+        logger.info("✅ [6/7] File size validation passed");
+    }
+
+
+    // ================================================================
+    // 7. FILE CORRUPTION / INTEGRITY
+    // ================================================================
+
+    logger.info(
+            "🔍 [7/7] Validating file integrity & corruption: {}",
+            fileName
+    );
+
+    validationStatusService.updateFileCorruptionStatus(
+            requestId,
+            ValidationStatus.PROCESSING
+    );
+
+    ValidationResultDto corruptionResult =
+            validationService.validateFileCorruption(
+                    manuscriptContent,
+                    fileName
+            );
+
+    if (!corruptionResult.isPassed()) {
+
+        allErrors.addAll(corruptionResult.getErrors());
+
+        validationStatusService.updateFileCorruptionStatus(
+                requestId,
+                ValidationStatus.FAILED
+        );
+
+        logger.warn("❌ [7/7] File corruption validation failed");
+
+    } else {
+
+        validationStatusService.updateFileCorruptionStatus(
+                requestId,
+                ValidationStatus.SUCCESSFUL
+        );
+
+        logger.info("✅ [7/7] File corruption validation passed");
+    }
+
+
+    // ================================================================
+    // FINAL RESULT
+    // ================================================================
+
+    setFinalValidationResult(
+            exchange,
+            allErrors,
+            fileName,
+            manuscriptContent
+    );
+
+    if (allErrors.isEmpty()) {
+
+        logger.info(
+                "🏆 All 7 validation rules successfully verified for requestId: {}",
+                requestId
+        );
+
+    } else {
+
+        logger.warn(
+                "🚫 Validation failed for requestId: {} with {} error(s)",
+                requestId,
+                allErrors.size()
+        );
+    }
 }
 
-    private String extractFileNameFromS3Reference(String s3Reference) {
-        if (s3Reference == null || s3Reference.isEmpty()) {
-            throw new RuntimeException("S3 reference is empty");
-        }
-        return s3Reference.substring(s3Reference.lastIndexOf("/") + 1);
+    private void setFinalValidationResult(
+        Exchange exchange,
+        List<ValidationErrorDto> allErrors,
+        String fileName,
+        byte[] manuscriptContent) {
+
+    ValidationResultDto finalResult =
+            new ValidationResultDto();
+
+    finalResult.setPassed(allErrors.isEmpty());
+
+    finalResult.setErrors(allErrors);
+
+    exchange.getIn().setHeader(
+            "VALIDATION_PASSED",
+            allErrors.isEmpty()
+    );
+
+    exchange.setProperty(
+            "VALIDATION_RESULT",
+            finalResult
+    );
+
+    exchange.setProperty(
+            "FILE_NAME",
+            fileName
+    );
+
+    exchange.setProperty(
+            "FILE_CONTENT",
+            manuscriptContent
+    );
+
+    if (!allErrors.isEmpty()) {
+
+        exchange.setProperty(
+                "FAILED_VALIDATION_NAME",
+                "Validation Failed"
+        );
     }
 
-    public static class ValidationResultMessage {
+    exchange.getIn().setBody(finalResult);
+}
 
-    public String requestId;
-    public String bookId;
-    public String authorId;
-    public String s3Reference;
-    public boolean validationPassed;
-    public int errorCount;
-    public String status;
 
-    public ValidationResultMessage(
-            String requestId,
-            String bookId,
-            String authorId,
-            String s3Reference,
-            boolean validationPassed,
-            int errorCount,
-            String status) {
+    private String extractFileName(String s3Reference) {
 
-        this.requestId = requestId;
-        this.bookId = bookId;
-        this.authorId = authorId;
-        this.s3Reference = s3Reference;
-        this.validationPassed = validationPassed;
-        this.errorCount = errorCount;
-        this.status = status;
+    if (s3Reference == null || s3Reference.isBlank()) {
+        return "";
     }
+
+    String path = s3Reference.trim();
+
+    int lastSlashIndex = path.lastIndexOf('/');
+
+    if (lastSlashIndex == -1) {
+        return path;
+    }
+
+    return path.substring(lastSlashIndex + 1);
 }
 }

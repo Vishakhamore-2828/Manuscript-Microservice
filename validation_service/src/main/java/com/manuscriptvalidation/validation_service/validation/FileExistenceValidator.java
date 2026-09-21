@@ -2,45 +2,38 @@ package com.manuscriptvalidation.validation_service.validation;
 
 import com.manuscriptvalidation.validation_service.dto.ValidationErrorDto;
 import com.manuscriptvalidation.validation_service.dto.ValidationResultDto;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.function.Predicate;
+
 /**
- * Validates file existence by checking if downloaded content is valid
- * Works with byte array content downloaded from S3
+ * Validates file existence by verifying that downloaded S3 content contains non-empty byte data
  */
 @Component
 public class FileExistenceValidator {
 
-    /**
-     * Validate file existence based on downloaded content
-     * @param fileContent Downloaded file content from S3
-     * @return ValidationResult
-     */
+    private static final Logger logger = LoggerFactory.getLogger(FileExistenceValidator.class);
+
+    private static final Predicate<byte[]> HAS_CONTENT = bytes -> bytes != null && bytes.length > 0;
+
     public ValidationResultDto validate(byte[] fileContent) {
         ValidationResultDto result = new ValidationResultDto();
 
-        if (fileContent == null || fileContent.length == 0) {
-            result.addError(
-                    new ValidationErrorDto(
-                            "FILE_NOT_FOUND",
-                            "Manuscript file is missing or empty in S3"
-                    )
-            );
+        if (!HAS_CONTENT.test(fileContent)) {
+            logger.warn("❌ File existence validation failed: content is null or empty");
+            result.addError(new ValidationErrorDto("FILE_NOT_FOUND", "Manuscript file is missing or empty in S3"));
             result.setPassed(false);
             return result;
         }
 
+        logger.debug("✅ File existence validation passed ({} bytes present)", fileContent.length);
         result.setPassed(true);
         return result;
     }
 
-    /**
-     * Validate that content is not null or empty
-     * @param content File content bytes
-     * @return true if file exists/has content, false otherwise
-     */
     public boolean fileExists(byte[] content) {
-        return content != null && content.length > 0;
+        return HAS_CONTENT.test(content);
     }
 }

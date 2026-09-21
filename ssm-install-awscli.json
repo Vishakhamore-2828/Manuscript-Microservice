@@ -1,0 +1,12 @@
+{
+  "commands": [
+    "if ! command -v aws >/dev/null 2>&1; then",
+    "  apt-get update && apt-get install -y unzip curl",
+    "  curl -s https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip",
+    "  unzip -q -o /tmp/awscliv2.zip -d /tmp",
+    "  /tmp/aws/install --update",
+    "  rm -rf /tmp/aws /tmp/awscliv2.zip",
+    "fi",
+    "aws --version"
+  ]
+}

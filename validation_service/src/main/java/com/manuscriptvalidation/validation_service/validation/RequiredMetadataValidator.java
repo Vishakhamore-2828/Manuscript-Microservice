@@ -3,174 +3,128 @@ package com.manuscriptvalidation.validation_service.validation;
 import com.manuscriptvalidation.validation_service.dto.FileUploadedEvent;
 import com.manuscriptvalidation.validation_service.dto.ValidationErrorDto;
 import com.manuscriptvalidation.validation_service.dto.ValidationResultDto;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.Objects;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
+
+/**
+ * Validates mandatory metadata fields and optional ISBN format on uploaded manuscript event
+ */
 @Component
 public class RequiredMetadataValidator {
 
-    public ValidationResultDto validate(FileUploadedEvent event) {
+    private static final Logger logger = LoggerFactory.getLogger(RequiredMetadataValidator.class);
 
+    private static final Predicate<String> IS_BLANK = s -> s == null || s.isBlank();
+    private static final Predicate<String> IS_NOT_BLANK = IS_BLANK.negate();
+
+    private record MetadataFieldRule(
+            String errorCode,
+            String errorMessage,
+            Function<FileUploadedEvent, String> extractor
+    ) {}
+
+    private static final MetadataFieldRule[] REQUIRED_RULES = {
+            new MetadataFieldRule("MISSING_REQUEST_ID", "Request ID is missing", FileUploadedEvent::getRequestId),
+            new MetadataFieldRule("MISSING_BOOK_ID", "Book ID is missing", FileUploadedEvent::getBookId),
+            new MetadataFieldRule("MISSING_BOOK_NAME", "Book name is missing", FileUploadedEvent::getBookName),
+            new MetadataFieldRule("MISSING_AUTHOR_ID", "Author ID is missing", FileUploadedEvent::getAuthorId),
+            new MetadataFieldRule("MISSING_AUTHOR_EMAIL", "Author email is missing", FileUploadedEvent::getAuthorEmail),
+            new MetadataFieldRule("MISSING_S3_REFERENCE", "S3 reference is missing", FileUploadedEvent::getS3Reference)
+    };
+
+    public ValidationResultDto validate(FileUploadedEvent event) {
         ValidationResultDto result = new ValidationResultDto();
 
         if (event == null) {
-            result.addError(
-                    new ValidationErrorDto(
-                            "MISSING_METADATA",
-                            "Event metadata is missing"
-                    )
-            );
+            logger.warn("❌ Metadata validation failed: event payload is null");
+            result.addError(new ValidationErrorDto("MISSING_METADATA", "Event metadata is missing"));
             result.setPassed(false);
             return result;
         }
 
-        // ✅ REQUIRED FIELDS (must not be blank)
-        if (isBlank(event.getRequestId())) {
-            result.addError(
-                    new ValidationErrorDto(
-                            "MISSING_REQUEST_ID",
-                            "Request ID is missing"
-                    )
-            );
+        // Validate all mandatory metadata fields using Stream API & Predicates
+        Stream.of(REQUIRED_RULES)
+                .filter(rule -> IS_BLANK.test(rule.extractor().apply(event)))
+                .map(rule -> new ValidationErrorDto(rule.errorCode(), rule.errorMessage()))
+                .forEach(result::addError);
+
+        // Validate optional ISBN only when present
+        if (IS_NOT_BLANK.test(event.getIsbn()) && !isValidISBN(event.getIsbn())) {
+            logger.debug("ISBN validation failed for value: {}", event.getIsbn());
+            result.addError(new ValidationErrorDto("INVALID_ISBN", "ISBN format is invalid"));
         }
 
-        if (isBlank(event.getBookId())) {
-            result.addError(
-                    new ValidationErrorDto(
-                            "MISSING_BOOK_ID",
-                            "Book ID is missing"
-                    )
-            );
+        boolean passed = result.getErrors().isEmpty();
+        result.setPassed(passed);
+        
+        if (passed) {
+            logger.debug("✅ Metadata validation passed for request: {}", event.getRequestId());
+        } else {
+            logger.warn("❌ Metadata validation failed for request: {} with {} errors", event.getRequestId(), result.getErrors().size());
         }
 
-        if (isBlank(event.getBookName())) {
-            result.addError(
-                    new ValidationErrorDto(
-                            "MISSING_BOOK_NAME",
-                            "Book name is missing"
-                    )
-            );
-        }
-
-        if (isBlank(event.getAuthorId())) {
-            result.addError(
-                    new ValidationErrorDto(
-                            "MISSING_AUTHOR_ID",
-                            "Author ID is missing"
-                    )
-            );
-        }
-
-        if (isBlank(event.getAuthorEmail())) {
-            result.addError(
-                    new ValidationErrorDto(
-                            "MISSING_AUTHOR_EMAIL",
-                            "Author email is missing"
-                    )
-            );
-        }
-
-        if (isBlank(event.getS3Reference())) {
-            result.addError(
-                    new ValidationErrorDto(
-                            "MISSING_S3_REFERENCE",
-                            "S3 reference is missing"
-                    )
-            );
-        }
-
-        // ✅ OPTIONAL FIELDS (can be blank, but validate if present)
-        if (!isBlank(event.getIsbn()) && !isValidISBN(event.getIsbn())) {
-            result.addError(
-                    new ValidationErrorDto(
-                            "INVALID_ISBN",
-                            "ISBN format is invalid"
-                    )
-            );
-        }
-
-        result.setPassed(result.getErrors().isEmpty());
         return result;
     }
 
-    private boolean isBlank(String value) {
-        return value == null || value.isBlank();
-    }
-
-    // ✅ Comprehensive ISBN validation with checksum verification
     private boolean isValidISBN(String isbn) {
-        if (isbn == null || isbn.isBlank()) {
-            return true; // Optional field
+        if (IS_BLANK.test(isbn)) {
+            return true;
         }
         
-        // Remove hyphens, spaces, and other formatting characters
         String cleaned = isbn.replaceAll("[^0-9X]", "").toUpperCase();
         
-        // Check if it's ISBN-10 or ISBN-13
         if (cleaned.length() == 10) {
             return isValidISBN10(cleaned);
         } else if (cleaned.length() == 13) {
             return isValidISBN13(cleaned);
-        } else {
-            // Invalid length - must be 10 or 13 digits
-            return false;
         }
+        return false;
     }
 
-    /**
-     * Validate ISBN-10 with checksum
-     * Formula: (10×digit₁ + 9×digit₂ + ... + 1×digit₁₀) mod 11 = 0
-     * Last digit can be 'X' (represents 10)
-     */
     private boolean isValidISBN10(String isbn10) {
-        // ISBN-10 must be 10 characters
         if (isbn10.length() != 10) {
             return false;
         }
         
-        // Validate format: first 9 must be digits, 10th can be digit or X
         for (int i = 0; i < 9; i++) {
             if (!Character.isDigit(isbn10.charAt(i))) {
-                return false; // First 9 chars must be digits
+                return false;
             }
         }
         
         char lastChar = isbn10.charAt(9);
         if (!Character.isDigit(lastChar) && lastChar != 'X') {
-            return false; // Last char must be digit or X
+            return false;
         }
         
-        // Calculate checksum
         int sum = 0;
         for (int i = 0; i < 9; i++) {
             sum += (isbn10.charAt(i) - '0') * (10 - i);
         }
         
-        int checkDigit = lastChar == 'X' ? 10 : (lastChar - '0');
+        int checkDigit = (lastChar == 'X') ? 10 : (lastChar - '0');
         sum += checkDigit;
         
         return sum % 11 == 0;
     }
 
-    /**
-     * Validate ISBN-13 with checksum
-     * Formula: Sum of (digit × weight) where weight alternates 1,3,1,3,...
-     * Result mod 10 should equal 0
-     */
     private boolean isValidISBN13(String isbn13) {
-        // ISBN-13 must be 13 digits
         if (isbn13.length() != 13) {
             return false;
         }
         
-        // All characters must be digits
         for (char c : isbn13.toCharArray()) {
             if (!Character.isDigit(c)) {
                 return false;
             }
         }
         
-        // Calculate checksum
         int sum = 0;
         for (int i = 0; i < 12; i++) {
             int digit = isbn13.charAt(i) - '0';
@@ -178,9 +132,7 @@ public class RequiredMetadataValidator {
             sum += digit * weight;
         }
         
-        int checkDigit = isbn13.charAt(12) - '0';
-        int calculatedCheck = (10 - (sum % 10)) % 10;
-        
-        return calculatedCheck == checkDigit;
+        int checkDigit = (10 - (sum % 10)) % 10;
+        return checkDigit == (isbn13.charAt(12) - '0');
     }
 }

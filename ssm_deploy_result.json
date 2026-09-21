@@ -1,0 +1,5 @@
+﻿{
+    "Status": "Failed",
+    "StandardOutput": "=== [1/4] Pulling updated JAR from S3 ===\n",
+    "StandardError": "/var/lib/amazon/ssm/i-0968a76162e55d86b/document/orchestration/77f4d41e-f435-4a0b-b57b-dc2819daa9cb/awsrunShellScript/0.awsrunShellScript/_script.sh: 3: aws: not found\nfailed to run commands: exit status 127"
+}

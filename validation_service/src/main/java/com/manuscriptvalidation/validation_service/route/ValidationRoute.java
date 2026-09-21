@@ -1,30 +1,27 @@
 package com.manuscriptvalidation.validation_service.route;
 
+import com.manuscriptvalidation.validation_service.dto.FileUploadedEvent;
+import com.manuscriptvalidation.validation_service.dto.ValidationResultDto;
 import com.manuscriptvalidation.validation_service.processor.ValidationProcessor;
+import com.manuscriptvalidation.validation_service.service.EmailNotificationService;
+import com.manuscriptvalidation.validation_service.service.ValidationFailService;
+import com.manuscriptvalidation.validation_service.service.ValidationPassService;
 import org.apache.camel.builder.RouteBuilder;
-import org.springframework.stereotype.Component;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
- * ValidationRoute - Orchestrates the manuscript validation workflow via Apache Camel
+ * ValidationRoute - Orchestrates manuscript validation, pass/fail branching, and email notification subroutes
  * 
- * Responsibilities:
- * - Consumes messages from SQS validation queue
- * - Routes messages to ValidationProcessor
- * - Logs validation results
- * - Handles exceptions gracefully
- * 
- * Flow:
- * SQS Message → Parse → ValidationProcessor (handles all validation logic) → Log Result → Complete
- * 
- * Note: ValidationProcessor handles ALL the work:
- * - Validates metadata
- * - Archives validated documents to S3
- * - Sends email notifications
- * - Records activities to database
- * - Publishes results to SNS
+ * Camel Routes Architecture:
+ * 1. Main SQS Consumer Route ("validation-service-route") -> SQS -> direct:validate-manuscript
+ * 2. Validation Processing Route ("validate-manuscript-route") -> ValidationProcessor -> choice (pass / fail)
+ * 3. Validation Pass Route ("validation-pass-route") -> ValidationPassService -> direct:send-pass-email
+ * 4. Validation Fail Route ("validation-fail-route") -> ValidationFailService -> direct:send-fail-email
+ * 5. Email Pass Route ("send-pass-email-route") -> EmailNotificationService (PASS)
+ * 6. Email Fail Route ("send-fail-email-route") -> EmailNotificationService (FAIL)
  */
 @Component
 @ConditionalOnProperty(
@@ -37,22 +34,33 @@ public class ValidationRoute extends RouteBuilder {
     private static final Logger logger = LoggerFactory.getLogger(ValidationRoute.class);
 
     private final ValidationProcessor validationProcessor;
+    private final ValidationPassService validationPassService;
+    private final ValidationFailService validationFailService;
+    private final EmailNotificationService emailNotificationService;
 
-    public ValidationRoute(ValidationProcessor validationProcessor) {
+    public ValidationRoute(ValidationProcessor validationProcessor,
+                           ValidationPassService validationPassService,
+                           ValidationFailService validationFailService,
+                           EmailNotificationService emailNotificationService) {
         this.validationProcessor = validationProcessor;
+        this.validationPassService = validationPassService;
+        this.validationFailService = validationFailService;
+        this.emailNotificationService = emailNotificationService;
     }
 
     @Override
     public void configure() {
 
-        // Global exception handler
+        // Global Exception Handler
         onException(Exception.class)
             .handled(false)
             .logStackTrace(true)
             .logExhausted(true)
-            .log("❌ Exception in validation route: ${exception.message}");
+            .log("❌ Exception caught in validation workflow: ${exception.message}");
 
-        // Main validation route
+        // =========================================================================
+        // 1. Main SQS Ingestion Route
+        // =========================================================================
         from("aws2-sqs:manuscript-validation-queue"
                 + "?region=ap-south-1"
                 + "&autoCreateQueue=false"
@@ -61,24 +69,78 @@ public class ValidationRoute extends RouteBuilder {
                 + "&visibilityTimeout=300"
                 + "&waitTimeSeconds=20")
             .routeId("validation-service-route")
-            
-            // Log incoming message
-            .log("📨 Received message from validation queue: ${header.JMSMessageID}")
-            
-            // Process the validation (all logic happens here)
+            .log("📨 Received incoming manuscript message from SQS: ${header.JMSMessageID}")
+            .to("direct:validate-manuscript");
+
+        // =========================================================================
+        // 2. Validation Execution & Branching Route
+        // =========================================================================
+        from("direct:validate-manuscript")
+            .routeId("validate-manuscript-route")
             .process(validationProcessor)
-            
-            // Route based on validation result
             .choice()
                 .when(header("VALIDATION_PASSED").isEqualTo(true))
-                    .log("✅ VALIDATION PASSED for request: ${header.REQUEST_ID}")
-                .when(header("VALIDATION_PASSED").isEqualTo(false))
-                    .log("❌ VALIDATION FAILED for request: ${header.REQUEST_ID}")
+                    .log("✅ Validation SUCCEEDED for request: ${header.REQUEST_ID}")
+                    .to("direct:validation-pass")
                 .otherwise()
-                    .log("⚠️  VALIDATION STATUS UNKNOWN for request: ${header.REQUEST_ID}")
+                    .log("🚫 Validation REJECTED for request: ${header.REQUEST_ID}")
+                    .to("direct:validation-fail")
             .end()
-            
-            // Final log
             .log("✨ Validation workflow completed for request: ${header.REQUEST_ID}");
+
+        // =========================================================================
+        // 3. Validation Pass Route (MongoDB Activity, S3 Archive, SNS Publish)
+        // =========================================================================
+        from("direct:validation-pass")
+            .routeId("validation-pass-route")
+            .process(exchange -> {
+                String requestId = exchange.getIn().getHeader("REQUEST_ID", String.class);
+                FileUploadedEvent event = exchange.getProperty("EVENT_OBJECT", FileUploadedEvent.class);
+                String fileName = exchange.getProperty("FILE_NAME", String.class);
+                byte[] content = exchange.getProperty("FILE_CONTENT", byte[].class);
+                ValidationResultDto result = exchange.getProperty("VALIDATION_RESULT", ValidationResultDto.class);
+
+                validationPassService.handleValidationPass(requestId, event, fileName, content, result);
+            })
+            .to("direct:send-pass-email");
+
+        // =========================================================================
+        // 4. Validation Fail Route (MongoDB Activity, SNS Failure Event, No S3 Archive)
+        // =========================================================================
+        from("direct:validation-fail")
+            .routeId("validation-fail-route")
+            .process(exchange -> {
+                String requestId = exchange.getIn().getHeader("REQUEST_ID", String.class);
+                FileUploadedEvent event = exchange.getProperty("EVENT_OBJECT", FileUploadedEvent.class);
+                ValidationResultDto result = exchange.getProperty("VALIDATION_RESULT", ValidationResultDto.class);
+
+                validationFailService.handleValidationFail(requestId, event, result);
+            })
+            .to("direct:send-fail-email");
+
+        // =========================================================================
+        // 5. Email Pass Route
+        // =========================================================================
+        from("direct:send-pass-email")
+            .routeId("send-pass-email-route")
+            .process(exchange -> {
+                String requestId = exchange.getIn().getHeader("REQUEST_ID", String.class);
+                FileUploadedEvent event = exchange.getProperty("EVENT_OBJECT", FileUploadedEvent.class);
+                emailNotificationService.sendPassNotification(requestId, event);
+            });
+
+        // =========================================================================
+        // 6. Email Fail Route
+        // =========================================================================
+        from("direct:send-fail-email")
+            .routeId("send-fail-email-route")
+            .process(exchange -> {
+                String requestId = exchange.getIn().getHeader("REQUEST_ID", String.class);
+                FileUploadedEvent event = exchange.getProperty("EVENT_OBJECT", FileUploadedEvent.class);
+                ValidationResultDto result = exchange.getProperty("VALIDATION_RESULT", ValidationResultDto.class);
+                String failedStep = exchange.getProperty("FAILED_VALIDATION_NAME", String.class);
+
+                emailNotificationService.sendFailNotification(requestId, event, result, failedStep);
+            });
     }
 }

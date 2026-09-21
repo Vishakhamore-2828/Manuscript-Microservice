@@ -1,14 +1,18 @@
 package com.manuscriptvalidation.validation_service.service;
 
 import com.manuscriptvalidation.validation_service.dto.Activity;
+import com.manuscriptvalidation.validation_service.dto.ValidationErrorDto;
 import com.manuscriptvalidation.validation_service.enums.ActivityType;
 import com.manuscriptvalidation.validation_service.repository.FileUploadedEventRepository;
+import com.manuscriptvalidation.validation_service.dto.ValidationErrorDto;
+import java.util.List;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @Service
@@ -43,6 +47,36 @@ public class ActivityService {
             
         } catch (Exception e) {
             logger.error("❌ Failed to add activity: requestId={}, error={}", requestId, e.getMessage(), e);
+        }
+    }
+
+    public void addValidationFailedActivity(
+        String requestId,
+        List<ValidationErrorDto> validationErrors) {
+
+        try {
+            Map<String, Object> activityMap = new HashMap<>();
+
+            activityMap.put("activityType", ActivityType.VALIDATION_FAILED.toString());
+            activityMap.put("applicationName", "validation_service");
+            activityMap.put("timestamp", LocalDateTime.now());
+            activityMap.put("validationErrors", validationErrors);
+
+            eventRepository.pushActivity(requestId, activityMap);
+
+            logger.info(
+                "❌ Validation failure activity saved: requestId={}, errors={}",
+                requestId,
+                validationErrors.size()
+            );
+
+        } catch (Exception e) {
+            logger.error(
+                    "❌ Failed to save validation errors: requestId={}, error={}",
+                    requestId,
+                    e.getMessage(),
+                    e
+            );
         }
     }
 }

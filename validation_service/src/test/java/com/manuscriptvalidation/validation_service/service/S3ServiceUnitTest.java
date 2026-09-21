@@ -13,7 +13,7 @@ class S3ServiceUnitTest {
     @Test
     @DisplayName("Test extractFileNameFromS3Reference")
     void testExtractFileNameFromS3Reference() {
-        String s3Reference = "s3://book-platform-files-206465504931-ap-south-1-an/injection/REQ-0007/test-manuscript.epub";
+        String s3Reference = "s3://book-platform-files-206465504931-ap-south-1-an/ingestion/REQ-0007/test-manuscript.epub";
         
         // Extract filename from S3 reference
         String fileName = s3Reference.substring(s3Reference.lastIndexOf("/") + 1);
@@ -29,7 +29,7 @@ class S3ServiceUnitTest {
     @Test
     @DisplayName("Test S3 path parsing")
     void testS3PathParsing() {
-        String s3Reference = "s3://book-platform-files-206465504931-ap-south-1-an/injection/REQ-0008/manuscript.pdf";
+        String s3Reference = "s3://book-platform-files-206465504931-ap-south-1-an/ingestion/REQ-0008/manuscript.pdf";
         
         // Parse S3 reference
         String[] parts = s3Reference.split("/");

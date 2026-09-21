@@ -1,0 +1,16 @@
+{
+  "commands": [
+    "set -e",
+    "echo === [1/4] Pulling updated JAR from S3 ===",
+    "aws s3 cp s3://book-platform-files-206465504931-ap-south-1-an/deployments/validation-service/validation-service-0.0.1-SNAPSHOT.jar /opt/book-platform/validation-service/validation-service-0.0.1-SNAPSHOT.jar",
+    "sudo chown ubuntu:ubuntu /opt/book-platform/validation-service/validation-service-0.0.1-SNAPSHOT.jar",
+    "echo === [2/4] Restarting systemd service ===",
+    "sudo systemctl restart validation-service.service",
+    "echo === [3/4] Waiting 8 seconds for startup ===",
+    "sleep 8",
+    "echo === [4/4] Verifying active service status ===",
+    "sudo systemctl is-active --quiet validation-service.service && echo 'SUCCESS: validation-service is active and running!' || (echo 'ERROR: validation-service failed to start' && sudo journalctl -u validation-service.service -n 50 --no-pager && exit 1)",
+    "sudo systemctl status validation-service.service --no-pager",
+    "ls -l --time-style=full-iso /opt/book-platform/validation-service/"
+  ]
+}
