@@ -7,7 +7,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
   contents: read
 
 jobs:
@@ -68,9 +67,11 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           role-to-assume: arn:aws:iam::206465504931:role/GitHubActions-Manuscript-Microservice-Deploy
           aws-region: ap-south-1
-
       - name: Upload JAR to S3 Deployment Bucket
         env:
           DEPLOY_BUCKET: ${{ secrets.DEPLOYMENT_S3_BUCKET || 'book-platform-files-206465504931-ap-south-1-an' }}
