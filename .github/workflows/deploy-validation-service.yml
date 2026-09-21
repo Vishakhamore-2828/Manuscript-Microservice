@@ -71,6 +71,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           role-to-assume: arn:aws:iam::206465504931:role/GitHubActions-Manuscript-Microservice-Deploy
+          role-skip-session-tagging: true
           aws-region: ap-south-1
       - name: Upload JAR to S3 Deployment Bucket
         env:
