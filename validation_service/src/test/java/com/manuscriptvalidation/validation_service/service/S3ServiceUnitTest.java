@@ -1,14 +1,50 @@
 package com.manuscriptvalidation.validation_service.service;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.DisplayName;
 import lombok.extern.slf4j.Slf4j;
+import org.mockito.ArgumentCaptor;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 @Slf4j
 @DisplayName("S3Service Unit Tests")
 class S3ServiceUnitTest {
+
+    private S3Client s3Client;
+    private S3Service s3Service;
+
+    @BeforeEach
+    void setUp() {
+        s3Client = mock(S3Client.class);
+        s3Service = new S3Service(s3Client);
+    }
+
+    @Test
+    @DisplayName("Archive uses request ID and case-preserved filename as the exact key")
+    void archiveUsesExactPathAndReturnsCanonicalReference() {
+        String canonicalReference = s3Service.uploadToArchiveBucket(
+                "s3://archive-bucket/archive/",
+                "REQ-0022/Original-Book.EPUB",
+                new byte[]{1, 2, 3});
+
+        ArgumentCaptor<PutObjectRequest> requestCaptor =
+                ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(s3Client).putObject(requestCaptor.capture(), any(RequestBody.class));
+
+        assertEquals("archive-bucket", requestCaptor.getValue().bucket());
+        assertEquals("REQ-0022/Original-Book.EPUB", requestCaptor.getValue().key());
+        assertEquals(
+                "archive-bucket/REQ-0022/Original-Book.EPUB",
+                canonicalReference);
+    }
     
     @Test
     @DisplayName("Test extractFileNameFromS3Reference")

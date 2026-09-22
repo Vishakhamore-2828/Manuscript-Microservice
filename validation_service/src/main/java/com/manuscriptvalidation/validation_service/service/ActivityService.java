@@ -1,11 +1,8 @@
 package com.manuscriptvalidation.validation_service.service;
 
-import com.manuscriptvalidation.validation_service.dto.Activity;
 import com.manuscriptvalidation.validation_service.dto.ValidationErrorDto;
 import com.manuscriptvalidation.validation_service.enums.ActivityType;
 import com.manuscriptvalidation.validation_service.repository.FileUploadedEventRepository;
-import com.manuscriptvalidation.validation_service.dto.ValidationErrorDto;
-import java.util.List;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -77,6 +74,23 @@ public class ActivityService {
                     e.getMessage(),
                     e
             );
+        }
+    }
+
+    public void recordSuccessfulArchive(String requestId, String s3Reference) {
+        Map<String, Object> activityMap = new HashMap<>();
+        activityMap.put("activityType", ActivityType.FILE_ARCHIVED_PASSED.toString());
+        activityMap.put("applicationName", "validation-service");
+        activityMap.put("timestamp", LocalDateTime.now());
+        activityMap.put("s3Reference", s3Reference);
+
+        try {
+            eventRepository.recordSuccessfulArchive(requestId, s3Reference, activityMap);
+            logger.info("Archive activity saved: requestId={}, s3Reference={}", requestId, s3Reference);
+        } catch (RuntimeException e) {
+            logger.error("Failed to save archive activity: requestId={}, error={}",
+                    requestId, e.getMessage(), e);
+            throw e;
         }
     }
 }
