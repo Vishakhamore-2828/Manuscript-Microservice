@@ -64,21 +64,23 @@ class ValidationPassServiceTest {
                 .thenReturn(canonicalReference);
         when(snsClient.publish(any(PublishRequest.class)))
                 .thenReturn(PublishResponse.builder().messageId("message-123").build());
+        ValidationResultDto validationResult = new ValidationResultDto();
+        validationResult.setPassed(true);
 
         validationPassService.handleValidationPass(
                 "REQ-0022",
                 event,
                 "Original-Book.EPUB",
                 manuscriptContent,
-                new ValidationResultDto());
+                validationResult);
 
         InOrder inOrder = inOrder(s3Service, activityService, snsClient);
+        inOrder.verify(activityService)
+                .addActivity("REQ-0022", ActivityType.VALIDATION_PASSED);
         inOrder.verify(s3Service)
                 .uploadToArchiveBucket(ARCHIVE_BUCKET, archivePath, manuscriptContent);
         inOrder.verify(activityService)
                 .recordSuccessfulArchive("REQ-0022", canonicalReference);
-        inOrder.verify(activityService)
-                .addActivity("REQ-0022", ActivityType.VALIDATION_PASSED);
 
         ArgumentCaptor<PublishRequest> publishCaptor =
                 ArgumentCaptor.forClass(PublishRequest.class);
@@ -105,6 +107,8 @@ class ValidationPassServiceTest {
     void doesNotTrackSuccessOrPublishWhenArchiveFails() {
         when(s3Service.uploadToArchiveBucket(any(), any(), any()))
                 .thenThrow(new RuntimeException("upload failed"));
+        ValidationResultDto validationResult = new ValidationResultDto();
+        validationResult.setPassed(true);
 
         assertThrows(RuntimeException.class, () ->
                 validationPassService.handleValidationPass(
@@ -112,8 +116,27 @@ class ValidationPassServiceTest {
                         new FileUploadedEvent(),
                         "Original-Book.EPUB",
                         new byte[]{1},
-                        new ValidationResultDto()));
+                        validationResult));
 
+        verify(activityService, never()).recordSuccessfulArchive(any(), any());
+        verify(snsClient, never()).publish(any(PublishRequest.class));
+    }
+
+    @Test
+    void doesNotArchiveWhenFinalValidationResultHasNotPassed() {
+        ValidationResultDto failedResult = new ValidationResultDto();
+        failedResult.setPassed(false);
+
+        assertThrows(IllegalStateException.class, () ->
+                validationPassService.handleValidationPass(
+                        "REQ-0022",
+                        new FileUploadedEvent(),
+                        "Original-Book.EPUB",
+                        new byte[]{1},
+                        failedResult));
+
+        verify(s3Service, never()).uploadToArchiveBucket(any(), any(), any());
+        verify(activityService, never()).addActivity(any(), any());
         verify(activityService, never()).recordSuccessfulArchive(any(), any());
         verify(snsClient, never()).publish(any(PublishRequest.class));
     }
