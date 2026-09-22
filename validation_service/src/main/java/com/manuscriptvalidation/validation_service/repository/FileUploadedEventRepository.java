@@ -30,4 +30,11 @@ public interface FileUploadedEventRepository
     @Query("{ 'requestId': ?0 }")
     @Update("{ '$push': { 'activities': ?1 } }")
     void pushActivity(String requestId, Map<String, Object> activity);
+
+    @Query("{ 'requestId': ?0 }")
+    @Update("{ '$set': { 's3Reference': ?1 }, '$push': { 'activities': ?2 } }")
+    void recordSuccessfulArchive(
+            String requestId,
+            String s3Reference,
+            Map<String, Object> activity);
 }

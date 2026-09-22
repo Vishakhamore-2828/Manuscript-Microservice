@@ -176,7 +176,7 @@ public class ValidationProcessor implements Processor {
     
     logger.info("📄 Extracted fileName from s3Reference: '{}'", fileName);
 
-    String s3Path = "ingestion/" + requestId + "/" + fileName;
+    String s3Path = event.getS3Reference();
 
     logger.info("📂 Download path from S3: {}", s3Path);
 

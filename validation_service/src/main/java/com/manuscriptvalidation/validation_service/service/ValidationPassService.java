@@ -14,10 +14,9 @@ import software.amazon.awssdk.services.sns.model.PublishResponse;
 
 /**
  * ValidationPassService - Handles the success lifecycle after all 7 validations pass:
- * 1. Records VALIDATION_PASSED in MongoDB activities
- * 2. Archives validated manuscript to S3 archive bucket
- * 3. Records FILE_ARCHIVED_PASSED in MongoDB activities
- * 4. Publishes VALIDATION_PASSED event notification to AWS SNS
+ * 1. Archives validated manuscript to S3 archive bucket
+ * 2. Records the canonical archive reference and success activities in MongoDB
+ * 3. Publishes VALIDATION_PASSED event notification to AWS SNS
  */
 @Service
 public class ValidationPassService {
@@ -45,61 +44,76 @@ public class ValidationPassService {
         this.objectMapper = objectMapper;
     }
 
-    public void handleValidationPass(String requestId,
-                                     FileUploadedEvent event,
-                                     String fileName,
-                                     byte[] manuscriptContent,
-                                     ValidationResultDto validationResult) {
-        logger.info("🎉 Processing VALIDATION_PASS lifecycle for request: {}", requestId);
+    public void handleValidationPass(
+            String requestId,
+            FileUploadedEvent event,
+            String fileName,
+            byte[] manuscriptContent,
+            ValidationResultDto validationResult) {
+        logger.info("Validation passed for requestId={}", requestId);
+        String archivePath = requestId + "/" + fileName;
+        String s3Reference;
 
-        // 1. Record validation passed activity
-        activityService.addActivity(requestId, ActivityType.VALIDATION_PASSED);
-
-        // 2. Archive to S3
         try {
-            String archivePath = requestId + "/" + fileName;
-            logger.info("📦 Archiving manuscript to S3 bucket '{}' at path: {}", archiveBucketName, archivePath);
-            s3Service.uploadToArchiveBucket(archiveBucketName, archivePath, manuscriptContent);
-            
-            activityService.addActivity(requestId, ActivityType.FILE_ARCHIVED_PASSED);
-            logger.info("✅ Manuscript successfully archived to S3 for request: {}", requestId);
-        } catch (Exception e) {
-            logger.error("❌ Failed to archive manuscript to S3 for request: {} - Error: {}", requestId, e.getMessage(), e);
+            s3Reference = s3Service.uploadToArchiveBucket(
+                    archiveBucketName,
+                    archivePath,
+                    manuscriptContent
+            );
+        } catch (RuntimeException e) {
+            logger.error("Failed to archive manuscript for requestId={}: {}",
+                    requestId, e.getMessage(), e);
             activityService.addActivity(requestId, ActivityType.FILE_ARCHIVED_FAILED);
             throw e;
         }
 
-        // 3. Publish result to SNS topic
-        publishValidationResultToSNS(requestId, event, true, 0, "VALIDATION_PASSED");
+        activityService.recordSuccessfulArchive(requestId, s3Reference);
+        activityService.addActivity(requestId, ActivityType.VALIDATION_PASSED);
+
+        logger.info("Canonical s3Reference={}", s3Reference);
+        publishValidationResultToSNS(
+                requestId,
+                event,
+                true,
+                0,
+                "VALIDATION_PASSED",
+                s3Reference
+        );
     }
 
-    private void publishValidationResultToSNS(String requestId,
-                                              FileUploadedEvent event,
-                                              boolean passed,
-                                              int errorCount,
-                                              String status) {
+    private void publishValidationResultToSNS(
+            String requestId,
+            FileUploadedEvent event,
+            boolean passed,
+            int errorCount,
+            String status,
+            String s3Reference) {
+        var message = new ValidationResultSnsPayload(
+                requestId,
+                event.getBookId(),
+                event.getAuthorId(),
+                passed,
+                errorCount,
+                status,
+                s3Reference
+        );
+
+        String messageJson;
         try {
-            var message = new ValidationResultSnsPayload(
-                    requestId,
-                    event.getBookId(),
-                    event.getAuthorId(),
-                    passed,
-                    errorCount,
-                    status
-            );
-
-            String messageJson = objectMapper.writeValueAsString(message);
-            PublishRequest publishRequest = PublishRequest.builder()
-                    .topicArn(validationResultTopicArn)
-                    .message(messageJson)
-                    .subject("Manuscript Validation Result - " + requestId)
-                    .build();
-
-            PublishResponse response = snsClient.publish(publishRequest);
-            logger.info("📢 Published VALIDATION_PASSED event to SNS (MessageId: {})", response.messageId());
+            messageJson = objectMapper.writeValueAsString(message);
         } catch (Exception e) {
-            logger.error("❌ Failed to publish validation pass event to SNS: {}", e.getMessage(), e);
+            throw new IllegalStateException("Failed to serialize validation pass event", e);
         }
+
+        PublishRequest publishRequest = PublishRequest.builder()
+                .topicArn(validationResultTopicArn)
+                .message(messageJson)
+                .subject("Manuscript Validation Result - " + requestId)
+                .build();
+
+        logger.info("Publishing validation result to SNS topic={}", validationResultTopicArn);
+        PublishResponse response = snsClient.publish(publishRequest);
+        logger.info("Published validation result to SNS, MessageId={}", response.messageId());
     }
 
     public record ValidationResultSnsPayload(
@@ -108,6 +122,7 @@ public class ValidationPassService {
             String authorId,
             boolean validationPassed,
             int errorCount,
-            String status
+            String status,
+            String s3Reference
     ) {}
 }

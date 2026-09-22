@@ -16,7 +16,7 @@ aws:
   
   s3:
     bucket-name: ${AWS_S3_BUCKET:book-platform-files-206465504931-ap-south-1-an}
-    archive-bucket-name: ${AWS_S3_ARCHIVE_BUCKET:s3://book-platform-files-206465504931-ap-south-1-an/archive/}
+    archive-bucket-name: ${AWS_S3_ARCHIVE_BUCKET:book-platform-files-206465504931-ap-south-1-an}
     object-key-prefix: ingestion
 
   sns:

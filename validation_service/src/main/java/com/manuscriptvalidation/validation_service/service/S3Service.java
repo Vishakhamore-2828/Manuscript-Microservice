@@ -182,121 +182,52 @@ public class S3Service {
     
     /**
      * Upload validated manuscript to archive S3 bucket
-     * FIXED: Now adds "archive/" prefix to prevent double paths
-     * 
+     *
      * @param archiveBucketName - Archive bucket name
      * @param archivePath - Path within archive bucket (e.g., "REQ-0037/fileName")
      * @param content - File content as byte array
-     * @return S3 URL of archived file
+     * @return Canonical archive reference in bucket/key format
      */
     public String uploadToArchiveBucket(String archiveBucketName, String archivePath, byte[] content) {
         try {
-            // ===== DEBUG #1: Input Validation =====
-            log.info("🔵 [DEBUG #1] uploadToArchiveBucket() called");
-            log.info("   archiveBucketName (RAW): '{}'", archiveBucketName);
-            log.info("   archivePath (RAW): '{}'", archivePath);
-            log.info("   content.length: {} bytes", content != null ? content.length : "NULL");
-            
-            // Check for null values
             if (archiveBucketName == null || archiveBucketName.isBlank()) {
-                log.error("❌ [ERROR] archiveBucketName is NULL or BLANK!");
                 throw new IllegalArgumentException("archiveBucketName cannot be null or blank");
             }
-            
+
             if (archivePath == null || archivePath.isBlank()) {
-                log.error("❌ [ERROR] archivePath is NULL or BLANK!");
                 throw new IllegalArgumentException("archivePath cannot be null or blank");
             }
-            
+
             if (content == null || content.length == 0) {
-                log.error("❌ [ERROR] content is NULL or EMPTY!");
                 throw new IllegalArgumentException("content cannot be null or empty");
             }
-            
-            // ===== DEBUG #2: Bucket Name Cleaning =====
-            // Extract ONLY the bucket name: remove s3:// prefix and everything after first /
+
             String cleanBucketName = archiveBucketName
-                    .replaceAll("^s3://", "")      // Remove s3:// prefix
-                    .split("/")[0];                // Extract bucket name only (part before first /)
-            log.info("🔵 [DEBUG #2] Bucket Name Cleaning");
-            log.info("   cleanBucketName: '{}'", cleanBucketName);
-            log.info("   Length: {}", cleanBucketName.length());
-            log.info("   Contains spaces: {}", cleanBucketName.contains(" "));
-            log.info("   Contains special chars: {}", !cleanBucketName.matches("[a-z0-9-_.]*"));
-            
-            // ===== DEBUG #3: Archive Path Processing =====
-            String fullKey = "archive/" + archivePath;
-            log.info("🔵 [DEBUG #3] Full Key Construction");
-            log.info("   archivePath: '{}'", archivePath);
-            log.info("   fullKey: '{}'", fullKey);
-            log.info("   fullKey length: {}", fullKey.length());
-            
-            // Check for double slashes
-            if (fullKey.contains("//")) {
-                log.warn("⚠️  [WARNING] fullKey contains double slashes: '{}'", fullKey);
-            }
-            
-            // ===== DEBUG #4: PutObjectRequest Building =====
-            log.info("🔵 [DEBUG #4] Building PutObjectRequest");
-            log.info("   Final Bucket: '{}'", cleanBucketName);
-            log.info("   Final Key: '{}'", fullKey);
-            log.info("   Content Size: {} bytes", content.length);
-            log.info("   S3 URL would be: s3://{}/{}", cleanBucketName, fullKey);
-            
+                    .replaceFirst("^s3://", "")
+                    .split("/", 2)[0];
+
+            log.info("Archive bucket={}", cleanBucketName);
+            log.info("Archive path={}", archivePath);
+
             PutObjectRequest putObjectRequest = PutObjectRequest.builder()
                     .bucket(cleanBucketName)
-                    .key(fullKey)
+                    .key(archivePath)
                     .build();
-            
-            log.info("🔵 [DEBUG #5] PutObjectRequest created successfully");
-            log.info("   Request Bucket: '{}'", putObjectRequest.bucket());
-            log.info("   Request Key: '{}'", putObjectRequest.key());
-            
-            // ===== DEBUG #6: AWS S3 Upload =====
-            log.info("🔵 [DEBUG #6] Attempting S3 PutObject...");
-            log.info("   S3Client instance: {}", s3Client != null ? "OK" : "NULL");
-            
+
             s3Client.putObject(putObjectRequest, RequestBody.fromBytes(content));
-            
-            log.info("🔵 [DEBUG #7] S3 PutObject succeeded!");
-            
-            // ===== DEBUG #8: Success Response =====
-            String archiveUrl = "s3://" + cleanBucketName + "/" + fullKey;
-            log.info("✅ Successfully archived manuscript!");
-            log.info("   Archive URL: {}", archiveUrl);
-            log.info("   Bucket: {}", cleanBucketName);
-            log.info("   Key: {}", fullKey);
-            
-            return archiveUrl;
-            
+
+            String s3Reference = cleanBucketName + "/" + archivePath;
+            log.info("Canonical s3Reference={}", s3Reference);
+            return s3Reference;
         } catch (IllegalArgumentException iae) {
-            log.error("❌ [VALIDATION ERROR] Invalid input parameters: {}", iae.getMessage());
+            log.error("Invalid archive upload parameters: {}", iae.getMessage());
             throw new RuntimeException("Archive upload failed - Invalid parameters: " + iae.getMessage(), iae);
-            
         } catch (software.amazon.awssdk.services.s3.model.S3Exception s3e) {
-            log.error("❌ [S3 ERROR] AWS S3 Exception occurred!");
-            log.error("   Error Code: {}", s3e.statusCode());
-            log.error("   Error Message: {}", s3e.getMessage());
-            log.error("   Request ID: {}", s3e.requestId());
-            
-            // Specific error handling
-            if (s3e.statusCode() == 403) {
-                log.error("   🔴 403 FORBIDDEN - Possible causes:");
-                log.error("      • Invalid AWS credentials");
-                log.error("      • Bucket name is incorrect");
-                log.error("      • IAM permissions insufficient");
-                log.error("      • Bucket doesn't exist in this region");
-            } else if (s3e.statusCode() == 404) {
-                log.error("   🔴 404 NOT FOUND - Bucket may not exist");
-            }
-            
+            log.error("Archive upload failed: statusCode={}, requestId={}, error={}",
+                    s3e.statusCode(), s3e.requestId(), s3e.getMessage(), s3e);
             throw new RuntimeException("Archive upload failed - S3 Error: " + s3e.getMessage(), s3e);
-            
         } catch (Exception e) {
-            log.error("❌ [GENERIC ERROR] Unexpected error during archive upload!");
-            log.error("   Error Type: {}", e.getClass().getName());
-            log.error("   Error Message: {}", e.getMessage());
-            log.error("   Stack Trace: ", e);
+            log.error("Unexpected archive upload error: {}", e.getMessage(), e);
             throw new RuntimeException("Archive upload failed - " + e.getMessage(), e);
         }
     }
