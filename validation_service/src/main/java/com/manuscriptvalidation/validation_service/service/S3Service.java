@@ -184,7 +184,7 @@ public class S3Service {
      * Upload validated manuscript to archive S3 bucket
      *
      * @param archiveBucketName - Archive bucket name
-     * @param archivePath - Path within archive bucket (e.g., "REQ-0037/fileName")
+     * @param archivePath - Manuscript path within the archive folder (e.g., "REQ-0037/fileName")
      * @param content - File content as byte array
      * @return Canonical archive reference in bucket/key format
      */
@@ -205,18 +205,19 @@ public class S3Service {
             String cleanBucketName = archiveBucketName
                     .replaceFirst("^s3://", "")
                     .split("/", 2)[0];
+            String archiveKey = "archive/" + archivePath;
 
             log.info("Archive bucket={}", cleanBucketName);
-            log.info("Archive path={}", archivePath);
+            log.info("Archive path={}", archiveKey);
 
             PutObjectRequest putObjectRequest = PutObjectRequest.builder()
                     .bucket(cleanBucketName)
-                    .key(archivePath)
+                    .key(archiveKey)
                     .build();
 
             s3Client.putObject(putObjectRequest, RequestBody.fromBytes(content));
 
-            String s3Reference = cleanBucketName + "/" + archivePath;
+            String s3Reference = cleanBucketName + "/" + archiveKey;
             log.info("Canonical s3Reference={}", s3Reference);
             return s3Reference;
         } catch (IllegalArgumentException iae) {
