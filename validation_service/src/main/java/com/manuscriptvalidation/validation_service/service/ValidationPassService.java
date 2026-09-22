@@ -14,9 +14,10 @@ import software.amazon.awssdk.services.sns.model.PublishResponse;
 
 /**
  * ValidationPassService - Handles the success lifecycle after all 7 validations pass:
- * 1. Archives validated manuscript to S3 archive bucket
- * 2. Records the canonical archive reference and success activities in MongoDB
- * 3. Publishes VALIDATION_PASSED event notification to AWS SNS
+ * 1. Records VALIDATION_PASSED in MongoDB
+ * 2. Archives validated manuscript to S3 archive bucket
+ * 3. Records the canonical archive reference and FILE_ARCHIVED_PASSED in MongoDB
+ * 4. Publishes VALIDATION_PASSED event notification to AWS SNS
  */
 @Service
 public class ValidationPassService {
@@ -50,7 +51,14 @@ public class ValidationPassService {
             String fileName,
             byte[] manuscriptContent,
             ValidationResultDto validationResult) {
+        if (validationResult == null || !validationResult.isPassed()) {
+            throw new IllegalStateException(
+                    "Cannot archive manuscript before all validations pass for requestId=" + requestId);
+        }
+
         logger.info("Validation passed for requestId={}", requestId);
+        activityService.addActivity(requestId, ActivityType.VALIDATION_PASSED);
+
         String archivePath = requestId + "/" + fileName;
         String s3Reference;
 
@@ -66,9 +74,7 @@ public class ValidationPassService {
             activityService.addActivity(requestId, ActivityType.FILE_ARCHIVED_FAILED);
             throw e;
         }
-
         activityService.recordSuccessfulArchive(requestId, s3Reference);
-        activityService.addActivity(requestId, ActivityType.VALIDATION_PASSED);
 
         logger.info("Canonical s3Reference={}", s3Reference);
         publishValidationResultToSNS(
